@@ -3,6 +3,10 @@
 #  ✨ Phoenix Terminal Stack — added by Claude
 # ─────────────────────────────────────────────────────────────
 
+# User preferences: written by `phoenix-term settings`. Loaded early so the
+# PHOENIX_* env vars are visible to every check below.
+[ -f "$HOME/.config/phoenix-term/config.zsh" ] && source "$HOME/.config/phoenix-term/config.zsh"
+
 # Homebrew env (Apple Silicon)
 [ -x /opt/homebrew/bin/brew ] && eval "$(/opt/homebrew/bin/brew shellenv)"
 
@@ -53,7 +57,14 @@ command -v bat     >/dev/null && export MANPAGER="sh -c 'col -bx | bat -l man -p
 command -v fd      >/dev/null && alias find='fd'
 command -v lazygit >/dev/null && alias lg='lazygit'
 command -v btop    >/dev/null && alias top='btop'
-command -v nvim    >/dev/null && alias vi='nvim' && alias vim='nvim'
+
+# Nvim as default editor — gated on PHOENIX_NVIM_DEFAULT (default on).
+if [[ "${PHOENIX_NVIM_DEFAULT:-1}" != "0" ]] && command -v nvim >/dev/null; then
+  alias vi='nvim'
+  alias vim='nvim'
+  export EDITOR=nvim
+  export VISUAL=nvim
+fi
 
 # Quick nav
 alias ..='cd ..'
@@ -81,62 +92,51 @@ ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=#5a5a5a'
 ZSH_AUTOSUGGEST_STRATEGY=(history completion)
 
 # ── fast-syntax-highlighting (MUST be sourced last) ────────
-# Using FSH's shipped default theme — no custom palette override.
-# (Earlier I had a custom theme here; removed at user request to
-# "undo every terminal color".)
 FSH_PLUGIN=/opt/homebrew/opt/zsh-fast-syntax-highlighting/share/zsh-fast-syntax-highlighting/fast-syntax-highlighting.plugin.zsh
 [ -f "$FSH_PLUGIN" ] && source "$FSH_PLUGIN"
 
 # ─────────────────────────────────────────────────────────────
 #  Auto-tmux: every new interactive shell drops into a fresh
-#  tmux session (so the sysmon sidebar + tmux niceties are
-#  always there). Set PHOENIX_AUTO_TMUX=0 to opt out.
+#  tmux session so the sysmon sidebar (and optional sticky
+#  banner) are always there.
 # ─────────────────────────────────────────────────────────────
-if [[ -o interactive && -z "$TMUX" && "${PHOENIX_AUTO_TMUX:-1}" != "0" ]] && command -v tmux >/dev/null; then
+if [[ -o interactive && -z "$TMUX" ]] && command -v tmux >/dev/null; then
   exec tmux new-session
 fi
 
 # ─────────────────────────────────────────────────────────────
-#  ✨ Welcome banner — printed on every new interactive shell.
-#  ASCII art generated from `figlet -f ANSI_Shadow "Dev Phoenix"`
-#  and baked in (no runtime figlet dependency). Colored in
-#  LightSeaGreen #20b2aa to match the Starship pills + fg.
+#  ✨ Welcome banner — rendered with figlet from PHOENIX_NAME.
+#  Used only when PHOENIX_BANNER_STICKY=inline. When sticky, the
+#  tmux pane spawned by phoenix-tmux-init handles the banner.
 # ─────────────────────────────────────────────────────────────
 phoenix-welcome() {
-  local sea=$'\e[38;2;32;178;170m'    # #20b2aa  LightSeaGreen — accent
-  local dim=$'\e[38;2;90;90;90m'      # #5a5a5a  rule / muted
-  local fg=$'\e[38;2;200;200;200m'    # #c8c8c8  info text
+  local sea=$'\e[38;2;32;178;170m'
+  local dim=$'\e[38;2;90;90;90m'
   local b=$'\e[1m' r=$'\e[0m'
+  local name="${PHOENIX_NAME:-DEV PHOENIX}"
 
-  # Center the 83-col-wide banner block in whatever the terminal width is.
   local cols=${COLUMNS:-$(tput cols 2>/dev/null || echo 80)}
-  local width=83
+  local rule="${dim}$(printf '─%.0s' $(seq 1 "$cols"))${r}"
+
+  local art
+  if command -v figlet >/dev/null 2>&1; then
+    art=$(figlet -f ANSI_Shadow -w "$cols" "$name" 2>/dev/null || figlet -w "$cols" "$name" 2>/dev/null || print -- "$name")
+  else
+    art="$name"
+  fi
+
+  local width=$(echo "$art" | awk '{ if (length > m) m=length } END { print m }')
   local lpad=$(( (cols - width) / 2 ))
   (( lpad < 0 )) && lpad=0
   local pad=$(printf '%*s' "$lpad" '')
-  # Rule spans the full terminal width.
-  local rule="${dim}$(printf '─%.0s' $(seq 1 "$cols"))${r}"
-
-  local now=$(date "+%a %d %b %Y  ·  %H:%M")
-  local os="macOS $(uname -sr | awk '{print $2}')"
-  local cwd="${PWD/#$HOME/~}"
-  local shell_info="ghostty · zsh"
 
   print
   print -- "${rule}"
   print
-  print -- "${pad}${sea}${b}██████╗ ███████╗██╗   ██╗    ██████╗ ██╗  ██╗ ██████╗ ███████╗███╗   ██╗██╗██╗  ██╗${r}"
-  print -- "${pad}${sea}${b}██╔══██╗██╔════╝██║   ██║    ██╔══██╗██║  ██║██╔═══██╗██╔════╝████╗  ██║██║╚██╗██╔╝${r}"
-  print -- "${pad}${sea}${b}██║  ██║█████╗  ██║   ██║    ██████╔╝███████║██║   ██║█████╗  ██╔██╗ ██║██║ ╚███╔╝ ${r}"
-  print -- "${pad}${sea}${b}██║  ██║██╔══╝  ╚██╗ ██╔╝    ██╔═══╝ ██╔══██║██║   ██║██╔══╝  ██║╚██╗██║██║ ██╔██╗ ${r}"
-  print -- "${pad}${sea}${b}██████╔╝███████╗ ╚████╔╝     ██║     ██║  ██║╚██████╔╝███████╗██║ ╚████║██║██╔╝ ██╗${r}"
-  print -- "${pad}${sea}${b}╚═════╝ ╚══════╝  ╚═══╝      ╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝╚═╝╚═╝  ╚═╝${r}"
+  while IFS= read -r line; do
+    print -- "${pad}${sea}${b}${line}${r}"
+  done <<< "$art"
   print
-  print -- "${pad}${sea}${b}                          ❮❮  W E L C O M E   B A C K  ❯❯${r}"
-  print
-  #printf "%s  ${sea}◉${r}  ${fg}%-36s${r}  ${sea}◉${r}  ${fg}%s${r}\n" "$pad" "$now" "$os"
-  #printf "%s  ${sea}◉${r}  ${fg}%-36s${r}  ${sea}◉${r}  ${fg}%s${r}\n" "$pad" "$cwd" "$shell_info"
-  #print
   print -- "${rule}"
   print
   # The bottom rule above already separates the banner from the first prompt,
@@ -146,13 +146,11 @@ phoenix-welcome() {
 
 # ─────────────────────────────────────────────────────────────
 #  Release-update check — at most once per day, fetched in the
-#  background. Compares the closest tag reachable from HEAD against
-#  the highest semver tag on origin. Notifies only on tagged releases.
-#  Disable with: export PHOENIX_NO_UPDATE_CHECK=1
+#  background. Compares the closest tag reachable from HEAD
+#  against the highest semver tag on origin. Notifies only on
+#  tagged releases.
 # ─────────────────────────────────────────────────────────────
 __phoenix_update_check() {
-  [[ "${PHOENIX_NO_UPDATE_CHECK:-0}" = "1" ]] && return
-
   local repo="${PHOENIX_REPO:-${${(%):-%x}:A:h:h}}"
   [[ -d "$repo/.git" ]] || return
   command git -C "$repo" rev-parse HEAD >/dev/null 2>&1 || return
@@ -164,8 +162,6 @@ __phoenix_update_check() {
   local last=0
   [[ -f "$stamp" ]] && last=$(cat "$stamp" 2>/dev/null || echo 0)
 
-  # Background tag-fetch at most once per 24h. Quiet & detached so it
-  # never blocks the prompt; the result is read on the *next* shell.
   if (( now - last > 86400 )); then
     mkdir -p "$cache"
     echo "$now" > "$stamp"
@@ -177,8 +173,6 @@ __phoenix_update_check() {
   latest=$(command git -C "$repo" tag --list 'v*' --sort=-v:refname 2>/dev/null | head -1)
   [[ -z "$latest" ]] && return
   [[ "$current" == "$latest" ]] && return
-
-  # If HEAD is already past the latest tag, the user is ahead — don't nag.
   command git -C "$repo" merge-base --is-ancestor "$latest" HEAD 2>/dev/null && return
 
   local yel=$'\e[38;2;250;189;47m' dim=$'\e[38;2;120;120;120m' sea=$'\e[38;2;32;178;170m' r=$'\e[0m'
@@ -189,18 +183,27 @@ __phoenix_update_check() {
   fi
 }
 
-# Auto-show on every new interactive shell (incl. new tmux panes / Ghostty tabs).
-# To suppress: `export PHOENIX_WELCOME=0` before sourcing, or comment the line below.
+# ─────────────────────────────────────────────────────────────
+#  On every new interactive shell:
+#   • run the release-update check (silent if no upstream / no new tag)
+#   • print the welcome banner inline only when STICKY=inline
+#     (sticky → tmux pane handles it; off → nothing)
+# ─────────────────────────────────────────────────────────────
 if [[ -o interactive ]]; then
   __phoenix_update_check
-  [[ "${PHOENIX_WELCOME:-1}" != "0" ]] && phoenix-welcome
+  case "${PHOENIX_BANNER_STICKY:-sticky}" in
+    inline) phoenix-welcome ;;
+  esac
 fi
 
 # ─────────────────────────────────────────────────────────────
-#  Full-width divider above every prompt — separates each
-#  command's input/output block visually. Uses $COLUMNS, so it
-#  auto-adjusts on window resize.
+#  Divider printed AFTER each command's output (visually: a
+#  full-width rule between the previous command's result and the
+#  next prompt). Skipped for the first prompt of a fresh shell so
+#  you don't see a divider hanging at the top of an empty terminal.
 # ─────────────────────────────────────────────────────────────
+__phoenix_skip_next_divider=1
+
 __phoenix_prompt_divider() {
   if (( ${__phoenix_skip_next_divider:-0} )); then
     __phoenix_skip_next_divider=0

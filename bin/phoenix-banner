@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# phoenix-banner — render the welcome banner inside a tmux pane and sleep.
+# Used when PHOENIX_BANNER_STICKY=sticky to keep the figlet name pinned at top.
+# Redraws on terminal resize.
+
+set -e
+
+[ -f "$HOME/.config/phoenix-term/config.zsh" ] && source "$HOME/.config/phoenix-term/config.zsh"
+
+NAME="${PHOENIX_NAME:-DEV PHOENIX}"
+
+# Set this pane's bg based on the user's mode, and disable input so the
+# banner can never be typed into or selected via prefix+navigation.
+#   image  → bg=default (transparent, wallpaper shows through)
+#   color  → bg=<PHOENIX_BG_COLOR> (explicit color, image hidden)
+if [[ -n "${TMUX_PANE:-}" ]] && command -v tmux >/dev/null 2>&1; then
+  if [[ "${PHOENIX_BG_MODE:-image}" == "color" ]]; then
+    tmux select-pane -t "$TMUX_PANE" -P "bg=${PHOENIX_BG_COLOR:-#0c0f11}" 2>/dev/null || true
+  else
+    tmux select-pane -t "$TMUX_PANE" -P 'bg=default' 2>/dev/null || true
+  fi
+  tmux select-pane -t "$TMUX_PANE" -d 2>/dev/null || true   # disable input
+fi
+SEA=$'\e[38;2;32;178;170m'
+DIM=$'\e[38;2;120;120;120m'
+B=$'\e[1m'
+R=$'\e[0m'
+
+render() {
+  local cols art width lpad pad
+  # Width detection order, most-to-least reliable for a fresh tmux pane:
+  #   1. ask tmux for the pane's known width
+  #   2. fall back to tput / COLUMNS for non-tmux invocations
+  # (tput cols inside a freshly-spawned pane can return 80 before the pty
+  #  size negotiation completes, so we don't trust it first.)
+  if [[ -n "${TMUX_PANE:-}" ]] && command -v tmux >/dev/null 2>&1; then
+    cols=$(tmux display-message -p -t "$TMUX_PANE" '#{pane_width}' 2>/dev/null)
+  fi
+  cols=${cols:-$(tput cols 2>/dev/null || echo "${COLUMNS:-80}")}
+  printf '\033[H\033[2J\033[3J'   # home + clear screen + clear scrollback
+
+  # `-w 999` keeps figlet from wrapping when the visible width fits the pane
+  # but the BYTE count (multi-byte block glyphs) overflows figlet's idea of
+  # the terminal width. We do our own centering math below.
+  if command -v figlet >/dev/null 2>&1; then
+    art=$(figlet -f ANSI_Shadow -w 999 "$NAME" 2>/dev/null \
+          || figlet -w 999 "$NAME" 2>/dev/null \
+          || echo "$NAME")
+  else
+    art="$NAME"
+  fi
+
+  # ANSI_Shadow renders each glyph at ~8 cols.  Byte-based length() in awk
+  # gives the wrong answer for the multi-byte block characters, and python3
+  # inside tmux's run-shell context may default to a non-UTF-8 locale, so
+  # we approximate visible width from the input length.  Close enough.
+  width=$(( ${#NAME} * 8 ))
+  lpad=$(( (cols - width) / 2 ))
+  (( lpad < 0 )) && lpad=0
+  pad=$(printf '%*s' "$lpad" '')
+
+  # Use absolute cursor positioning so the final line doesn't trigger a
+  # scroll-up. Skip blank/whitespace-only lines — figlet emits a trailing
+  # space-row that would otherwise clobber the bottom shadow when the
+  # pane height matches the figlet content exactly (writing to "row 7"
+  # in a 6-row pane gets clamped onto row 6, erasing the real content).
+  local row=1
+  while IFS= read -r line; do
+    [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+    printf '\033[%d;1H%s%s%s%s%s' "$row" "$pad" "$SEA" "$B" "$line" "$R"
+    row=$((row + 1))
+  done <<<"$art"
+}
+
+cleanup() { printf '\033[?25h\n'; exit 0; }
+trap cleanup INT TERM
+# SIGWINCH sets the dirty flag; the poll loop below acts on it. Bash's
+# signal-while-`wait` behavior varies — polling is the reliable path.
+__phoenix_dirty=1
+trap '__phoenix_dirty=1' WINCH
+
+cur_size() {
+  # Source-of-truth for "current pane size" — tmux knows it exactly,
+  # even when tput cols/lines is stale (e.g. right after a sibling pane
+  # closed and our pane was re-laid out).
+  if [[ -n "${TMUX_PANE:-}" ]] && command -v tmux >/dev/null 2>&1; then
+    tmux display-message -p -t "$TMUX_PANE" '#{pane_width}x#{pane_height}' 2>/dev/null
+  else
+    printf '%sx%s' "$(tput cols 2>/dev/null || echo 80)" "$(tput lines 2>/dev/null || echo 8)"
+  fi
+}
+
+printf '\033[?25l'   # hide cursor
+
+# tmux's split-window can briefly report a default pane size before its
+# layout settles on the requested -l value. Render once, settle, render
+# again — that guarantees the second draw lands at the final size and
+# all rows of the figlet are written.
+render
+sleep 0.3
+render
+last_size=$(cur_size)
+__phoenix_dirty=0
+
+while true; do
+  size=$(cur_size)
+  if (( __phoenix_dirty )) || [[ "$size" != "$last_size" ]]; then
+    render
+    last_size="$size"
+    __phoenix_dirty=0
+  fi
+  sleep 1
+done

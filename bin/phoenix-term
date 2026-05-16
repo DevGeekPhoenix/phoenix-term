@@ -30,6 +30,14 @@ case "$cmd" in
   doctor)                 exec bash "$INSTALL" --doctor "$@" ;;
   uninstall)              exec bash "$INSTALL" --uninstall "$@" ;;
   version|-V|--version)   exec bash "$INSTALL" --version ;;
+  settings|config)
+    # No-arg "settings" drops into the interactive menu; pass through anything else.
+    if [ $# -eq 0 ]; then
+      exec bash "$INSTALL" --settings --menu
+    else
+      exec bash "$INSTALL" --settings "$@"
+    fi
+    ;;
   where)                  echo "$REPO" ;;
   help|-h|--help|"")
     cat <<EOF
@@ -41,6 +49,10 @@ Usage:
   phoenix-term check          Fetch tags and report if a newer release exists
   phoenix-term doctor         Healthcheck symlinks, brew, shell wiring
   phoenix-term version        Show the release tag this clone is on
+  phoenix-term settings       Interactive preferences menu
+    phoenix-term settings --list             Print current values
+    phoenix-term settings --get KEY          Print one value
+    phoenix-term settings --set KEY=VALUE    Set one value
   phoenix-term uninstall      Remove symlinks, restore most-recent backups
   phoenix-term where          Print the repo path ($REPO)
   phoenix-term help           Show this help

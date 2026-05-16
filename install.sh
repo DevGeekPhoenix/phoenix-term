@@ -28,6 +28,8 @@ dry()  { printf "%s[dry-run]%s %s\n" "$DIM" "$R" "$*"; }
 
 DRY_RUN=0
 MODE=install
+SETTINGS_ARG=""
+SETTINGS_KEY=""
 
 usage() {
   cat <<EOF
@@ -41,12 +43,36 @@ Usage:
   bash install.sh --uninstall      Remove symlinks, restore most-recent backups,
                                    strip the phoenix.zsh source line from ~/.zshrc
   bash install.sh --doctor         Verify symlinks, brew formulas, and shell wiring
+  bash install.sh --settings       Manage preferences (welcome, auto-tmux, etc.)
+                                    Subcommands: --list (default), --menu, --ensure,
+                                    --get KEY, --set KEY=VALUE
   bash install.sh --help           Show this help
 
 Flags:
   --dry-run    Print every filesystem action without performing it.
 EOF
 }
+
+# Pre-parse: extract --settings <subcommand> [<key>] so subcommands aren't
+# treated as unknown top-level flags.
+ARGS=()
+while (( $# )); do
+  case "$1" in
+    --settings)
+      MODE=settings
+      if [[ -n "${2:-}" && "${2:0:1}" == "-" ]]; then
+        SETTINGS_ARG="$2"; shift
+        # --get/--set take a KEY after the subcommand
+        if [[ "$SETTINGS_ARG" == "--get" || "$SETTINGS_ARG" == "--set" ]]; then
+          SETTINGS_KEY="${2:-}"; [[ -n "$SETTINGS_KEY" ]] && shift
+        fi
+      fi
+      shift
+      ;;
+    *) ARGS+=("$1"); shift ;;
+  esac
+done
+set -- "${ARGS[@]+"${ARGS[@]}"}"
 
 for arg in "$@"; do
   case "$arg" in
@@ -78,6 +104,9 @@ LINKS=(
   "bin/phoenix-sysmon|$HOME/.local/bin/phoenix-sysmon"
   "bin/phoenix-sysmon-toggle|$HOME/.local/bin/phoenix-sysmon-toggle"
   "bin/phoenix-term|$HOME/.local/bin/phoenix-term"
+  "bin/phoenix-banner|$HOME/.local/bin/phoenix-banner"
+  "bin/phoenix-tmux-init|$HOME/.local/bin/phoenix-tmux-init"
+  "bin/phoenix-tmux-rebalance|$HOME/.local/bin/phoenix-tmux-rebalance"
   "nvim/colors/phoenix.lua|$HOME/.config/nvim/colors/phoenix.lua"
   "nvim/lua/plugins/colorscheme.lua|$HOME/.config/nvim/lua/plugins/colorscheme.lua"
   "nvim/lua/lualine/themes/phoenix.lua|$HOME/.config/nvim/lua/lualine/themes/phoenix.lua"
@@ -222,7 +251,13 @@ do_install() {
     backup_and_link "$REPO/${entry%%|*}" "${entry##*|}"
   done
 
-  run chmod +x "$HOME/.local/bin/phoenix-sysmon" "$HOME/.local/bin/phoenix-sysmon-toggle" "$HOME/.local/bin/phoenix-term"
+  run chmod +x \
+    "$HOME/.local/bin/phoenix-sysmon" \
+    "$HOME/.local/bin/phoenix-sysmon-toggle" \
+    "$HOME/.local/bin/phoenix-term" \
+    "$HOME/.local/bin/phoenix-banner" \
+    "$HOME/.local/bin/phoenix-tmux-init" \
+    "$HOME/.local/bin/phoenix-tmux-rebalance"
 
   ensure_zshrc_source
 
@@ -235,7 +270,20 @@ do_install() {
     fi
   fi
 
+  local config_was_fresh=0
+  [[ -f "$PHOENIX_CFG_FILE" ]] || config_was_fresh=1
+  settings_ensure
+
   print_banner
+
+  # Offer to customize, but only on a real TTY and only on first install.
+  if (( config_was_fresh )) && [[ -t 0 ]] && ! (( DRY_RUN )); then
+    printf "\n  Customize settings now? %s[y/N]%s " "$DIM" "$R"
+    local answer; read -r answer || answer=""
+    case "$answer" in
+      [yY]*) settings_menu ;;
+    esac
+  fi
 }
 
 print_banner() {
@@ -257,8 +305,9 @@ ${SEA}  Phoenix Term installed.${R}
 
   ${DIM}Maintenance:${R}
     ${SEA}phoenix-term${R}              everyday CLI (run with no args for help)
+    ${SEA}phoenix-term settings${R}     interactive preferences (welcome, auto-tmux, …)
     ${SEA}phoenix-term doctor${R}       check the install is healthy
-    ${SEA}phoenix-term update${R}       fetch + fast-forward from origin
+    ${SEA}phoenix-term update${R}       fetch + fast-forward to latest release tag
     ${SEA}phoenix-term uninstall${R}    remove and restore backups
 ${SEA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${R}
 EOF
@@ -542,6 +591,379 @@ do_update() {
   exec bash "$REPO/install.sh"
 }
 
+# ---------- settings ----------
+#
+# User preferences stored as sourceable shell at ~/.config/phoenix-term/config.zsh.
+# phoenix.zsh sources it at the top of every interactive shell, so the env vars
+# are set before any behavior check runs.
+#
+# Row layout:  KEY | DEFAULT | TYPE | DESCRIPTION | TYPE_ARGS
+#   TYPE      ∈ { text, enum, path, bool }
+#   TYPE_ARGS  enum → comma-separated allowed values (first one is "on" color)
+#              bool → "on-label|off-label"  (using a literal | INSIDE the field
+#                                            isn't possible with our delimiter,
+#                                            so use a slash:  "on/off")
+
+PHOENIX_CFG_DIR="$HOME/.config/phoenix-term"
+PHOENIX_CFG_FILE="$PHOENIX_CFG_DIR/config.zsh"
+
+SETTINGS=(
+  "PHOENIX_NAME|DEV PHOENIX|text|Your name shown on the welcome banner & sysmon title|"
+  "PHOENIX_BANNER_STICKY|sticky|enum|How the welcome banner appears|sticky,inline,off"
+  "PHOENIX_BG|phoenix|path|Ghostty background image (used when bg-mode=image) — path or 'phoenix'|"
+  "PHOENIX_BG_MODE|image|enum|image: bg image with opaque banner/sysmon. color: solid color whole window|image,color"
+  "PHOENIX_BG_COLOR|#0c0f11|text|Bg color (whole window when mode=color; banner/sysmon overlay when mode=image)|"
+  "PHOENIX_NVIM_DEFAULT|1|bool|Make nvim the default editor (alias vi/vim, set \$EDITOR)|on/off"
+)
+
+# Generated Ghostty overrides written by settings — points at this file
+# from repo/ghostty/phoenix.config's `config-file` directive. The phoenix
+# main config never gets edited; mode changes only touch this user file.
+PHOENIX_GHOSTTY_USER_CONF="$HOME/.config/ghostty/phoenix-user.conf"
+
+settings_field() {
+  # Echo the Nth (1-based) field of the row matching KEY in SETTINGS.
+  local key="$1" n="$2" row
+  for row in "${SETTINGS[@]}"; do
+    if [[ "${row%%|*}" == "$key" ]]; then
+      echo "$row" | cut -d'|' -f"$n"
+      return 0
+    fi
+  done
+  return 1
+}
+
+settings_default() { settings_field "$1" 2; }
+settings_type()    { settings_field "$1" 3; }
+settings_desc()    { settings_field "$1" 4; }
+settings_type_args() { settings_field "$1" 5; }
+
+settings_get() {
+  # Reads only the persisted config file. The shell env may carry stale
+  # values from a prior `phoenix.zsh` source, so we deliberately ignore it.
+  local key="$1"
+  if [[ -f "$PHOENIX_CFG_FILE" ]]; then
+    local v; v=$(grep -E "^export $key=" "$PHOENIX_CFG_FILE" 2>/dev/null | tail -1 \
+                 | sed -E "s/^export $key=//" | sed -E 's/^"(.*)"$/\1/')
+    [[ -n "$v" ]] && { echo "$v"; return; }
+  fi
+  settings_default "$key"
+}
+
+settings_set() {
+  local key="$1" value="$2"
+  if ! settings_field "$key" 1 >/dev/null; then
+    warn "unknown setting: $key"
+    return 1
+  fi
+  local type; type=$(settings_type "$key")
+
+  # Type-specific validation, applied before any side-effect.
+  case "$type" in
+    bool)
+      [[ "$value" == "0" || "$value" == "1" ]] || {
+        warn "$key is bool — value must be 0 or 1 (got: $value)"; return 1; }
+      ;;
+    enum)
+      local args; args=$(settings_type_args "$key")
+      if ! grep -qE "(^|,)$value(,|$)" <<<"$args"; then
+        warn "$key: invalid value '$value' — must be one of: $args"
+        return 1
+      fi
+      ;;
+  esac
+
+  run mkdir -p "$PHOENIX_CFG_DIR"
+  (( DRY_RUN )) && { dry "set $key=$value in $PHOENIX_CFG_FILE"; return; }
+  if [[ ! -f "$PHOENIX_CFG_FILE" ]]; then settings_ensure; fi
+
+  # Apply side-effects before writing, so a failure (e.g. missing image)
+  # doesn't leave the config out of sync with reality. Pass new values
+  # explicitly — settings_get reads the file, which hasn't been written yet.
+  case "$key" in
+    PHOENIX_BG)       settings_apply_bg "$value" || return 1 ;;
+    PHOENIX_BG_MODE)  settings_apply_bg_mode "$value" "$(settings_get PHOENIX_BG_COLOR)" ;;
+    PHOENIX_BG_COLOR) settings_apply_bg_mode "$(settings_get PHOENIX_BG_MODE)" "$value" ;;
+  esac
+
+  # Always quote stored values so spaces (e.g. PHOENIX_NAME="My Name") survive.
+  local escaped="${value//\"/\\\"}"
+  local tmp; tmp=$(mktemp)
+  if grep -qE "^export $key=" "$PHOENIX_CFG_FILE"; then
+    awk -v k="$key" -v v="\"$escaped\"" '
+      $0 ~ "^export " k "=" { print "export " k "=" v; next }
+      { print }
+    ' "$PHOENIX_CFG_FILE" > "$tmp"
+  else
+    cat "$PHOENIX_CFG_FILE" > "$tmp"
+    printf 'export %s="%s"\n' "$key" "$escaped" >> "$tmp"
+  fi
+  mv "$tmp" "$PHOENIX_CFG_FILE"
+}
+
+settings_apply_bg() {
+  # Resolve a PHOENIX_BG value to an image path and repoint the symlink.
+  #   "phoenix"   → repo's ghostty/phoenix-bg.jpg
+  #   "<path>"    → that file (expanded, must exist)
+  local value="$1"
+  local dest="$HOME/.config/ghostty/phoenix-bg.jpg"
+  local target
+  case "$value" in
+    phoenix|"") target="$REPO/ghostty/phoenix-bg.jpg" ;;
+    "~/"*)      target="$HOME/${value#\~/}" ;;
+    *)          target="$value" ;;
+  esac
+  if [[ ! -f "$target" ]]; then
+    warn "background image not found: $target"
+    return 1
+  fi
+  run mkdir -p "$(dirname "$dest")"
+  if [[ -L "$dest" || -e "$dest" ]]; then run rm "$dest"; fi
+  run ln -s "$target" "$dest"
+  say "ghostty background → $target  (reload Ghostty to apply)"
+}
+
+settings_apply_bg_mode() {
+  # Two modes:
+  #   image  — Ghostty draws the wallpaper. No per-pane styling; the
+  #            image shows through banner, main, sysmon, and dividers.
+  #   color  — Ghostty's `background = <color>` paints the whole window.
+  #            Cells inherit it. We also set the pane-border bg so the
+  #            1-cell divider line picks up the same color.
+  # Mode and color are passed explicitly — settings_set calls us with the
+  # new values before they hit the config file, so we can't rely on
+  # settings_get for whichever is changing.
+  local mode="${1:-image}"
+  local color="${2:-$(settings_get PHOENIX_BG_COLOR)}"
+  [[ -z "$color" ]] && color="#0c0f11"
+
+  # ----- Ghostty override file -----
+  run mkdir -p "$(dirname "$PHOENIX_GHOSTTY_USER_CONF")"
+  if (( DRY_RUN )); then
+    dry "write $PHOENIX_GHOSTTY_USER_CONF for mode=$mode color=$color"
+  else
+    case "$mode" in
+      color)
+        {
+          echo "# Phoenix Term — generated by phoenix-term settings (mode=color)"
+          echo "# Disable the wallpaper image and use a solid bg color."
+          echo "background-image ="
+          echo "background = $color"
+        } > "$PHOENIX_GHOSTTY_USER_CONF"
+        ;;
+      *)
+        {
+          echo "# Phoenix Term — generated by phoenix-term settings (mode=image)"
+          echo "# Image mode: main config's background-image directive stands."
+        } > "$PHOENIX_GHOSTTY_USER_CONF"
+        ;;
+    esac
+  fi
+
+  # ----- tmux pane + border styling -----
+  command -v tmux >/dev/null 2>&1 || return 0
+
+  local pane_style border_style
+  case "$mode" in
+    image)
+      # Every pane transparent. Image shows through; dividers stay default.
+      pane_style="bg=default"
+      border_style="fg=#1c2027"
+      ;;
+    color)
+      # Every pane explicitly painted with the bg color. Dividers too.
+      pane_style="bg=$color"
+      border_style="fg=#1c2027,bg=$color"
+      ;;
+  esac
+
+  tmux set-option -g pane-border-style "$border_style" 2>/dev/null || true
+  tmux set-option -g pane-active-border-style "$border_style" 2>/dev/null || true
+
+  # Apply pane bg to EVERY phoenix pane across all sessions — not just
+  # banner/sysmon, also the main shell pane so its cells (and any cells
+  # without explicit bg in its content) match the chosen mode.
+  tmux list-panes -a -F '#{pane_id}' 2>/dev/null \
+    | while read -r p; do
+        tmux select-pane -t "$p" -P "$pane_style" 2>/dev/null || true
+      done
+
+  say "bg-mode $mode ($color) — reload Ghostty (cmd+,) to apply image/color change"
+}
+
+settings_ensure() {
+  if [[ -f "$PHOENIX_CFG_FILE" ]]; then return 0; fi
+  run mkdir -p "$PHOENIX_CFG_DIR"
+  if (( DRY_RUN )); then dry "write default config to $PHOENIX_CFG_FILE"; return; fi
+  {
+    echo "# Phoenix Term — preferences (edit with: phoenix-term settings)"
+    echo "# Each value can also be exported in your shell before sourcing phoenix.zsh."
+    echo
+    local s key def
+    for s in "${SETTINGS[@]}"; do
+      key="${s%%|*}"
+      def=$(echo "$s" | cut -d'|' -f2)
+      printf 'export %s="%s"\n' "$key" "$def"
+    done
+  } > "$PHOENIX_CFG_FILE"
+  say "wrote default config: $PHOENIX_CFG_FILE"
+}
+
+settings_render_label() {
+  # Colored, human-friendly rendering of a value, given its key.
+  local key="$1" val="$2" type
+  type=$(settings_type "$key")
+  case "$type" in
+    bool)
+      local labels on off
+      labels=$(settings_type_args "$key")
+      on="${labels%%/*}"; off="${labels#*/}"
+      if [[ "$val" == "1" ]]; then printf "%s%s%s" "$GRN" "$on" "$R"
+      else printf "%s%s%s" "$YEL" "$off" "$R"; fi
+      ;;
+    enum)
+      local default; default=$(settings_default "$key")
+      if [[ "$val" == "$default" ]]; then printf "%s%s%s" "$GRN" "$val" "$R"
+      elif [[ "$val" == "off" ]]; then printf "%s%s%s" "$YEL" "$val" "$R"
+      else printf "%s%s%s" "$SEA" "$val" "$R"; fi
+      ;;
+    text)
+      printf "%s%s%s" "$SEA" "$val" "$R"
+      ;;
+    path)
+      if [[ "$val" == "phoenix" || -z "$val" ]]; then
+        printf "%s%s%s" "$DIM" "phoenix (default)" "$R"
+      else
+        # Squash $HOME → ~ for readability.
+        printf "%s%s%s" "$SEA" "${val/#$HOME/~}" "$R"
+      fi
+      ;;
+    *)
+      printf "%s" "$val"
+      ;;
+  esac
+}
+
+settings_edit_one() {
+  # Drive the per-setting prompt based on the field's type.
+  local key="$1" type cur args
+  type=$(settings_type "$key")
+  cur=$(settings_get "$key")
+  args=$(settings_type_args "$key")
+  case "$type" in
+    bool)
+      local new
+      if [[ "$cur" == "1" ]]; then new=0; else new=1; fi
+      settings_set "$key" "$new"
+      printf "%s✓%s %s = %s\n" "$GRN" "$R" "$key" "$(settings_render_label "$key" "$new")"
+      ;;
+    enum)
+      printf "  Choices: %s\n" "$args"
+      printf "  Current: %s\n" "$(settings_render_label "$key" "$cur")"
+      printf "  New (Enter to keep): "
+      local new; read -r new || true
+      [[ -z "$new" ]] && return 0
+      if ! grep -qE "(^|,)$new(,|$)" <<<"$args"; then
+        warn "invalid value '$new' — must be one of: $args"
+        return 1
+      fi
+      settings_set "$key" "$new"
+      printf "%s✓%s %s = %s\n" "$GRN" "$R" "$key" "$(settings_render_label "$key" "$new")"
+      ;;
+    text)
+      printf "  Current: %s\n" "$(settings_render_label "$key" "$cur")"
+      printf "  New (Enter to keep): "
+      local new; read -r new || true
+      [[ -z "$new" ]] && return 0
+      settings_set "$key" "$new"
+      printf "%s✓%s %s = %s\n" "$GRN" "$R" "$key" "$(settings_render_label "$key" "$new")"
+      ;;
+    path)
+      printf "  Current: %s\n" "$(settings_render_label "$key" "$cur")"
+      printf "  New path (or 'phoenix' to reset, Enter to keep): "
+      local new; read -r new || true
+      [[ -z "$new" ]] && return 0
+      settings_set "$key" "$new" || return 1
+      printf "%s✓%s %s = %s\n" "$GRN" "$R" "$key" "$(settings_render_label "$key" "$(settings_get "$key")")"
+      ;;
+  esac
+}
+
+settings_menu() {
+  settings_ensure
+  while true; do
+    printf "\n%s%sPhoenix Term — settings%s\n" "$SEA" "$B" "$R"
+    printf "%sstored at %s%s\n\n" "$DIM" "$PHOENIX_CFG_FILE" "$R"
+    local i=1 row key desc val
+    for row in "${SETTINGS[@]}"; do
+      key="${row%%|*}"
+      desc=$(settings_desc "$key")
+      val=$(settings_get "$key")
+      printf "  %s%d)%s  %-23s  [%s]\n" "$SEA" "$i" "$R" "$key" "$(settings_render_label "$key" "$val")"
+      printf "      %s%s%s\n" "$DIM" "$desc" "$R"
+      i=$((i+1))
+    done
+    printf "\n  %sr)%s  reset all to defaults\n" "$SEA" "$R"
+    printf "  %sq)%s  quit\n\n" "$SEA" "$R"
+    printf "Choose %s1-%d%s, %sr%s, %sq%s: " "$SEA" "${#SETTINGS[@]}" "$R" "$SEA" "$R" "$SEA" "$R"
+    local choice; read -r choice || return 0
+    case "$choice" in
+      [qQ]|exit|"") break ;;
+      [rR])
+        rm -f "$PHOENIX_CFG_FILE"
+        settings_ensure
+        # Also reset the background symlink to repo default.
+        settings_apply_bg phoenix || true
+        say "reset to defaults"
+        ;;
+      [1-9])
+        local idx=$((choice-1))
+        if (( idx >= 0 && idx < ${#SETTINGS[@]} )); then
+          settings_edit_one "${SETTINGS[$idx]%%|*}"
+        else
+          warn "no setting $choice"
+        fi
+        ;;
+      *) warn "unknown choice: $choice" ;;
+    esac
+  done
+  printf "%s•%s reload with: %sexec zsh%s\n" "$SEA" "$R" "$SEA" "$R"
+}
+
+do_settings() {
+  local sub="${SETTINGS_ARG:-}"
+  case "$sub" in
+    --ensure)  settings_ensure ;;
+    --get)
+      local k="${SETTINGS_KEY:-}"
+      [[ -z "$k" ]] && { warn "--get needs KEY"; exit 2; }
+      settings_get "$k"
+      ;;
+    --set)
+      local pair="${SETTINGS_KEY:-}"
+      [[ "$pair" != *=* ]] && { warn "--set expects KEY=VALUE"; exit 2; }
+      local k="${pair%%=*}" v="${pair#*=}"
+      settings_set "$k" "$v" || exit 1
+      printf "%s✓%s %s = %s\n" "$GRN" "$R" "$k" "$(settings_render_label "$k" "$(settings_get "$k")")"
+      ;;
+    --list|"")
+      settings_ensure
+      printf "%s%sPhoenix Term — settings%s  %s(%s)%s\n" "$SEA" "$B" "$R" "$DIM" "$PHOENIX_CFG_FILE" "$R"
+      local row key desc val
+      for row in "${SETTINGS[@]}"; do
+        key="${row%%|*}"
+        desc=$(settings_desc "$key")
+        val=$(settings_get "$key")
+        printf "  %-23s  [%s]  %s%s%s\n" "$key" "$(settings_render_label "$key" "$val")" "$DIM" "$desc" "$R"
+      done
+      ;;
+    --menu)
+      settings_menu
+      ;;
+    *) warn "unknown settings subcommand: $sub"; exit 2 ;;
+  esac
+}
+
 case "$MODE" in
   install)   do_install ;;
   update)    do_update ;;
@@ -549,4 +971,5 @@ case "$MODE" in
   version)   do_version ;;
   uninstall) do_uninstall ;;
   doctor)    do_doctor ;;
+  settings)  do_settings ;;
 esac

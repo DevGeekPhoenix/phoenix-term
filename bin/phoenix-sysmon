@@ -6,6 +6,50 @@
 import os, re, sys, time, signal, subprocess, shutil
 from collections import deque
 
+# Load PHOENIX_* preferences from ~/.config/phoenix-term/config.zsh so the
+# sidebar respects `phoenix-term settings` without needing the env exported
+# into tmux's environment.
+_cfg = os.path.expanduser("~/.config/phoenix-term/config.zsh")
+if os.path.exists(_cfg):
+    _line_re = re.compile(r'^\s*export\s+([A-Z_][A-Z0-9_]*)=(.*)$')
+    try:
+        with open(_cfg) as _f:
+            for _l in _f:
+                _m = _line_re.match(_l)
+                if _m:
+                    _k, _v = _m.group(1), _m.group(2).strip()
+                    if len(_v) >= 2 and _v[0] == _v[-1] and _v[0] in ('"', "'"):
+                        _v = _v[1:-1]
+                    os.environ.setdefault(_k, _v)
+    except OSError:
+        pass
+
+PHOENIX_NAME = os.environ.get("PHOENIX_NAME", "DEV PHOENIX")
+
+# Set this pane's bg based on the user's mode, and disable input so the
+# sysmon sidebar can never be typed into or selected via prefix+navigation.
+#   image  → bg=default (transparent, wallpaper shows through)
+#   color  → bg=<PHOENIX_BG_COLOR> (explicit color, image hidden)
+def _apply_pane_bg():
+    pane = os.environ.get("TMUX_PANE", "")
+    if not pane:
+        return
+    mode = os.environ.get("PHOENIX_BG_MODE", "image")
+    color = os.environ.get("PHOENIX_BG_COLOR", "#0c0f11")
+    style = f"bg={color}" if mode == "color" else "bg=default"
+    for args in (["select-pane", "-t", pane, "-P", style],
+                 ["select-pane", "-t", pane, "-d"]):  # -d disables input
+        try:
+            subprocess.run(["tmux"] + args,
+                           check=False,
+                           stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL,
+                           timeout=2)
+        except Exception:
+            pass
+
+_apply_pane_bg()
+
 # ── Palette ────────────────────────────────────────────────────
 SEA    = "\033[38;2;32;178;170m"     # #20b2aa  primary
 TEAL   = "\033[38;2;94;234;212m"     # #5eead4  highlight
@@ -23,6 +67,10 @@ R      = "\033[0m"
 def pane_width():
     try: return max(28, shutil.get_terminal_size((34, 24)).columns)
     except Exception: return 34
+
+def pane_height():
+    try: return max(10, shutil.get_terminal_size((34, 24)).lines)
+    except Exception: return 24
 
 # ── Shell helper ───────────────────────────────────────────────
 def sh(cmd):
@@ -216,28 +264,37 @@ def section_end(accent=SEA):
 
 # ── Header ──
 # Order:  blank · TITLE · blank · CLOCK · blank · DATE · blank · rule
+def _center_pad(w, item_w):
+    # Round-to-nearest centering so an odd amount of spare space biases
+    # toward EQUAL on both sides (instead of always favouring the left
+    # padding via floor division).
+    if w <= item_w:
+        return 0
+    return round((w - item_w) / 2)
+
 def header_block(w):
     rule = f"{SEA}{'━' * w}{R}"
     out = [""]
 
-    # Title at top.
-    title_text = "D E V   P H O E N I X"
+    # Title at top — spaced letters of PHOENIX_NAME (e.g. "DEV PHOENIX"
+    # becomes "D E V   P H O E N I X").
+    title_text = " ".join(PHOENIX_NAME.upper())
     title = f"{SEA}{B}{title_text}{R}"
-    t_pad = max(0, (w - len(title_text)) // 2)
+    t_pad = _center_pad(w, len(title_text))
     out.append(f"{' ' * t_pad}{title}")
     out.append("")  # padding between title and clock
 
     # Clock — chunky multi-line block art.
     rows = clock_rows()
     cw = len(rows[0]) if rows else 0
-    c_pad = max(0, (w - cw) // 2)
+    c_pad = _center_pad(w, cw)
     for row in rows:
         out.append(f"{' ' * c_pad}{SEA}{B}{row}{R}")
     out.append("")  # padding between clock and date
 
     # Date.
     date_text = time.strftime("%a  %d %b %Y")
-    d_pad = max(0, (w - len(date_text)) // 2)
+    d_pad = _center_pad(w, len(date_text))
     out.append(f"{' ' * d_pad}{MUTED}{date_text}{R}")
     out.append("")  # padding between date and rule
 
@@ -283,6 +340,7 @@ def refresh_metrics(state):
 
 def draw(state):
     w = pane_width()
+    h = pane_height()
     bar_w = w - 4   # content inside the │ accent indent
 
     now = time.time()
@@ -294,7 +352,10 @@ def draw(state):
     in_rate, out_rate = m['in_rate'], m['out_rate']
     bp, bc, la = m['bp'], m['bc'], m['la']
 
-    sys.stdout.write("\033[H\033[J")
+    # Clear once at the start; we'll place each row via absolute cursor
+    # positioning afterwards. \033[3J also wipes scrollback so the pane
+    # can never be scrolled up to reveal stale frames.
+    sys.stdout.write("\033[H\033[2J\033[3J")
     L = []
     L.extend(header_block(w))
     L.append("")
@@ -303,7 +364,7 @@ def draw(state):
     L.append(section_top("CPU",    f"{cpu:5.1f}%", w))
     L.append(cont(smooth_bar(cpu, bar_w)))
     L.append(cont(f"{TEAL}{sparkline(state.cpu_hist, bar_w, max_val=100)}{R}"))
-    L.append(cont(f"{MUTED}load  {FG}{la[0]:.2f}{R} {MUTED}·{R} "
+    L.append(cont(f"{MUTED}load {FG}{la[0]:.2f}{R} {MUTED}·{R} "
                   f"{FG}{la[1]:.2f}{R} {MUTED}·{R} {FG}{la[2]:.2f}{R}"))
     L.append(section_end())
     L.append("")
@@ -311,14 +372,14 @@ def draw(state):
     # ── Memory ──────────────────────────────────────────
     L.append(section_top("MEMORY", f"{mp:5.1f}%", w))
     L.append(cont(smooth_bar(mp, bar_w)))
-    L.append(cont(f"{FG}{mu:.1f}{R} {MUTED}/{R} {FG}{mt:.1f}  GB{R}   {MUTED}used{R}"))
+    L.append(cont(f"{FG}{mu:.1f}{R} {MUTED}/{R} {FG}{mt:.1f} GB{R} {MUTED}used{R}"))
     L.append(section_end())
     L.append("")
 
     # ── Disk ────────────────────────────────────────────
     L.append(section_top("DISK",   f"{dp:5.1f}%", w))
     L.append(cont(smooth_bar(dp, bar_w)))
-    L.append(cont(f"{FG}{da:.0f}{R} {MUTED}/{R} {FG}{dt:.0f}  GB{R}   {MUTED}free{R}"))
+    L.append(cont(f"{FG}{da:.0f}{R} {MUTED}/{R} {FG}{dt:.0f} GB{R} {MUTED}free{R}"))
     L.append(section_end())
     L.append("")
 
@@ -326,9 +387,9 @@ def draw(state):
     L.append(section_top("NETWORK", "", w))
     max_rate = max(max(state.net_in_hist, default=1),
                    max(state.net_out_hist, default=1), 1024)
-    L.append(cont(f"{TEAL}▼{R}  {FG}{fmt_rate(in_rate)}{R}"))
+    L.append(cont(f"{TEAL}▼{R} {FG}{fmt_rate(in_rate)}{R}"))
     L.append(cont(f"{SEA}{sparkline(state.net_in_hist, bar_w, max_val=max_rate)}{R}"))
-    L.append(cont(f"{TEAL}▲{R}  {FG}{fmt_rate(out_rate)}{R}"))
+    L.append(cont(f"{TEAL}▲{R} {FG}{fmt_rate(out_rate)}{R}"))
     L.append(cont(f"{SEA}{sparkline(state.net_out_hist, bar_w, max_val=max_rate)}{R}"))
     L.append(section_end())
     L.append("")
@@ -338,13 +399,20 @@ def draw(state):
         L.append(section_top("BATTERY", f"{bp:3d}%", w))
         L.append(cont(smooth_bar(bp, bar_w, inverse=True)))
         if bc:
-            L.append(cont(f"{YEL}⚡{R}  {FG}charging{R}"))
+            L.append(cont(f"{YEL}⚡{R}{FG}charging{R}"))
         else:
-            L.append(cont(f"{MUTED}▮  on battery{R}"))
+            L.append(cont(f"{MUTED}▮ on battery{R}"))
         L.append(section_end())
         L.append("")
 
-    sys.stdout.write("\n".join(L) + "\n")
+    # Write each row at an absolute position so the output never scrolls.
+    # If the dashboard is taller than the pane (small window), truncation
+    # at the bottom is fine — the header (name + clock) stays anchored at
+    # the top.
+    for i, line in enumerate(L):
+        if i >= h:
+            break
+        sys.stdout.write(f"\033[{i + 1};1H{line}")
     sys.stdout.flush()
 
 # ── Entry point ────────────────────────────────────────────────
