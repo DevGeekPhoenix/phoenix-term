@@ -1,0 +1,368 @@
+#!/usr/bin/env python3
+# Beautiful right-sidebar system monitor.
+# No Nerd Font dependencies — uses only widely-supported Unicode so it
+# renders identically in any monospaced font. Themed in LightSeaGreen.
+
+import os, re, sys, time, signal, subprocess, shutil
+from collections import deque
+
+# ── Palette ────────────────────────────────────────────────────
+SEA    = "\033[38;2;32;178;170m"     # #20b2aa  primary
+TEAL   = "\033[38;2;94;234;212m"     # #5eead4  highlight
+PINK   = "\033[38;2;244;114;182m"
+MUTED  = "\033[38;2;140;140;140m"
+DIM    = "\033[38;2;68;68;68m"       # empty bar fill
+FG     = "\033[38;2;230;230;230m"
+RED    = "\033[38;2;251;73;52m"
+YEL    = "\033[38;2;250;189;47m"
+GRN    = "\033[38;2;152;195;121m"
+B      = "\033[1m"
+R      = "\033[0m"
+
+# ── Layout ─────────────────────────────────────────────────────
+def pane_width():
+    try: return max(28, shutil.get_terminal_size((34, 24)).columns)
+    except Exception: return 34
+
+# ── Shell helper ───────────────────────────────────────────────
+def sh(cmd):
+    try:
+        return subprocess.check_output(
+            cmd, shell=True, stderr=subprocess.DEVNULL, text=True, timeout=2
+        )
+    except Exception:
+        return ""
+
+# ── Metric collectors (macOS) ──────────────────────────────────
+def cpu_pct():
+    out = sh("top -l 1 -n 0 | grep 'CPU usage'")
+    m = re.search(r'([\d.]+)%\s+idle', out)
+    return max(0.0, 100 - float(m.group(1))) if m else 0.0
+
+def mem_info():
+    out = sh("vm_stat")
+    if not out: return (0, 0, 0)
+    page_size = 16384
+    pm = re.search(r'\(page size of (\d+)', out)
+    if pm: page_size = int(pm.group(1))
+    pages = {}
+    for line in out.splitlines():
+        m = re.match(r'^"?(.+?)"?:\s+(\d+)\.?$', line.strip())
+        if m: pages[m.group(1)] = int(m.group(2))
+    active     = pages.get('Pages active', 0)        * page_size
+    wired      = pages.get('Pages wired down', 0)    * page_size
+    compressed = pages.get('Pages occupied by compressor', 0) * page_size
+    free       = pages.get('Pages free', 0)          * page_size
+    inactive   = pages.get('Pages inactive', 0)      * page_size
+    used  = active + wired + compressed
+    total = used + free + inactive
+    if total == 0: return (0, 0, 0)
+    return (used / 1024**3, total / 1024**3, used / total * 100)
+
+def disk_info():
+    # macOS APFS quirk: `df /` reports only the small read-only system
+    # volume. The real user data lives at /System/Volumes/Data (Catalina+).
+    # Prefer that when it exists; fall back to / otherwise.
+    target = "/System/Volumes/Data" if os.path.exists("/System/Volumes/Data") else "/"
+    out = sh(f"df -k {target}").splitlines()
+    if len(out) < 2: return (0, 0, 0, 0)
+    p = out[1].split()
+    if len(p) < 4: return (0, 0, 0, 0)
+    total = int(p[1]); used = int(p[2]); avail = int(p[3])
+    return (avail / 1024**2, total / 1024**2, used / total * 100 if total else 0,
+            used / 1024**2)
+
+def net_bytes():
+    out = sh("netstat -ibn")
+    in_total = out_total = 0
+    seen = set()
+    for line in out.splitlines()[1:]:
+        p = line.split()
+        if len(p) < 10: continue
+        name = p[0]
+        if name in seen or name.startswith('lo'): continue
+        try:
+            in_total  += int(p[6])
+            out_total += int(p[9])
+            seen.add(name)
+        except ValueError: continue
+    return (in_total, out_total)
+
+def battery_info():
+    out = sh("pmset -g batt")
+    if not out: return (None, False)
+    m = re.search(r'(\d+)%', out)
+    pct = int(m.group(1)) if m else None
+    charging = ('AC Power' in out) or ('charging' in out and 'discharging' not in out)
+    return (pct, charging)
+
+def uptime_str():
+    out = sh("uptime").strip()
+    m = re.search(r'up\s+(.+?),\s+\d+\s+user', out)
+    return m.group(1).strip() if m else "?"
+
+def loadavg():
+    try: return os.getloadavg()
+    except Exception: return (0, 0, 0)
+
+def hostname_short():
+    return sh("hostname -s").strip() or "host"
+
+# ── Clock (block digits, 4w × 5h, 7-segment "Digital Numbers" style) ─
+# Each digit is a 4-col × 5-row block-art glyph using full-blocks for
+# the segments. Solid horizontal/vertical bars mimic Digital Numbers'
+# chunky LED look. Adjacent chars get a 1-col gap so they don't merge.
+DIGITS = {
+    '0': ["████", "█  █", "█  █", "█  █", "████"],
+    '1': ["   █", "   █", "   █", "   █", "   █"],
+    '2': ["████", "   █", "████", "█   ", "████"],
+    '3': ["████", "   █", "████", "   █", "████"],
+    '4': ["█  █", "█  █", "████", "   █", "   █"],
+    '5': ["████", "█   ", "████", "   █", "████"],
+    '6': ["████", "█   ", "████", "█  █", "████"],
+    '7': ["████", "   █", "   █", "   █", "   █"],
+    '8': ["████", "█  █", "████", "█  █", "████"],
+    '9': ["████", "█  █", "████", "   █", "████"],
+    ':': [" ", "█", " ", "█", " "],
+}
+
+def clock_rows():
+    s = time.strftime("%H:%M:%S")
+    rows = ["", "", "", "", ""]
+    for i, ch in enumerate(s):
+        pat = DIGITS.get(ch)
+        if not pat: continue
+        for r in range(5):
+            rows[r] += pat[r]
+            if i < len(s) - 1:
+                rows[r] += " "
+    return rows
+
+# ── Visual primitives ──────────────────────────────────────────
+EIGHTHS = "▁▂▃▄▅▆▇█"
+PARTIAL = "▏▎▍▌▋▊▉█"
+
+# Bold+italic → Ghostty renders this segment using font-family-bold-italic,
+# which is mapped to "Digital Numbers". Use for any numeric text we want
+# in the LED clock face.
+DN = "\033[1;3m"
+
+_DIGIT_RUN = re.compile(r'\d+(?:\.\d+)?')
+
+def digitize(s, base):
+    """Wrap each digit run in s with the DN font escape, restoring
+    `base` color/style codes after each match so non-digit chars keep
+    their original color."""
+    return _DIGIT_RUN.sub(lambda m: f"{DN}{m.group()}{R}{base}", s)
+
+def color_for(pct, inverse=False):
+    if inverse:
+        if pct < 20: return RED
+        if pct < 40: return YEL
+        return SEA
+    if pct >= 85: return RED
+    if pct >= 65: return YEL
+    return SEA
+
+def smooth_bar(pct, w, inverse=False):
+    pct = max(0.0, min(100.0, pct))
+    color = color_for(pct, inverse)
+    units = pct / 100.0 * w * 8
+    full = int(units // 8); rem = int(units - full * 8)
+    bar = "█" * full
+    if rem > 0 and full < w:
+        bar += PARTIAL[rem - 1]; empty = w - full - 1
+    else:
+        empty = w - full
+    return f"{color}{bar}{DIM}{'▒' * empty}{R}"
+
+def sparkline(values, w, max_val=None):
+    if not values: return " " * w
+    vals = list(values)[-w:]
+    if len(vals) < w: vals = [0] * (w - len(vals)) + vals
+    m = max_val if max_val is not None else (max(vals) or 1)
+    m = max(m, 1)
+    return "".join(EIGHTHS[min(7, int(round(v / m * 7)))] for v in vals)
+
+def fmt_rate(bps):
+    if bps < 1024:    return f"{bps:5.0f}  B/s"
+    if bps < 1024**2: return f"{bps/1024:5.1f} KB/s"
+    if bps < 1024**3: return f"{bps/1024**2:5.1f} MB/s"
+    return f"{bps/1024**3:5.1f} GB/s"
+
+def strip_ansi(s): return re.sub(r'\x1b\[[0-9;]*m', '', s)
+def vlen(s): return len(strip_ansi(s))
+
+# ── Section header with left bracket  ╭  + label + dotted rule + value ─
+# Layout: " " + head + " " + dashes + " " + value     (3 literal spaces)
+# Layout: " " + head + " " + dashes                   (2 literal spaces, no value)
+def section_top(label, value, w, accent=SEA):
+    head_text = f"╭─ {label}"
+    head = f"{accent}{B}{head_text}{R}"
+    if value:
+        val_text = value
+        val = f"{accent}{B}{val_text}{R}"
+        fill = max(1, w - 3 - len(head_text) - len(val_text))
+        return f" {head}{accent} {'─' * fill} {val}"
+    fill = max(1, w - 2 - len(head_text))
+    return f" {head}{accent} {'─' * fill}{R}"
+
+# Continuation rows use a left │ accent, indenting content by 3.
+def cont(content, accent=SEA):
+    return f" {accent}│{R}  {content}"
+
+def section_end(accent=SEA):
+    return f" {accent}╰{R}"
+
+# ── Header ──
+# Order:  blank · TITLE · blank · CLOCK · blank · DATE · blank · rule
+def header_block(w):
+    rule = f"{SEA}{'━' * w}{R}"
+    out = [""]
+
+    # Title at top.
+    title_text = "D E V   P H O E N I X"
+    title = f"{SEA}{B}{title_text}{R}"
+    t_pad = max(0, (w - len(title_text)) // 2)
+    out.append(f"{' ' * t_pad}{title}")
+    out.append("")  # padding between title and clock
+
+    # Clock — chunky multi-line block art.
+    rows = clock_rows()
+    cw = len(rows[0]) if rows else 0
+    c_pad = max(0, (w - cw) // 2)
+    for row in rows:
+        out.append(f"{' ' * c_pad}{SEA}{B}{row}{R}")
+    out.append("")  # padding between clock and date
+
+    # Date.
+    date_text = time.strftime("%a  %d %b %Y")
+    d_pad = max(0, (w - len(date_text)) // 2)
+    out.append(f"{' ' * d_pad}{MUTED}{date_text}{R}")
+    out.append("")  # padding between date and rule
+
+    out.append(rule)
+    return out
+
+# ── Main draw ──────────────────────────────────────────────────
+class State:
+    def __init__(self):
+        self.cpu_hist     = deque(maxlen=28)
+        self.net_in_hist  = deque(maxlen=24)
+        self.net_out_hist = deque(maxlen=24)
+        self.prev_bytes   = None
+        # Cached metrics — refreshed every METRIC_REFRESH_S, while the
+        # clock & redraw tick every 1s for a smooth seconds counter.
+        self.metrics      = None
+        self.last_refresh = 0.0
+
+METRIC_REFRESH_S = 2.0
+
+def refresh_metrics(state):
+    cpu = cpu_pct()
+    mu, mt, mp = mem_info()
+    da, dt, dp, du = disk_info()   # available, total, used_pct, used
+    in_b, out_b = net_bytes()
+    bp, bc = battery_info()
+    la = loadavg()
+    now = time.time()
+    if state.prev_bytes:
+        dt_s = max(0.5, now - state.prev_bytes[0])
+        in_rate  = max(0, in_b  - state.prev_bytes[1]) / dt_s
+        out_rate = max(0, out_b - state.prev_bytes[2]) / dt_s
+    else:
+        in_rate = out_rate = 0.0
+    state.cpu_hist.append(cpu)
+    state.net_in_hist.append(in_rate)
+    state.net_out_hist.append(out_rate)
+    state.prev_bytes = (now, in_b, out_b)
+    state.metrics = dict(cpu=cpu, mu=mu, mt=mt, mp=mp,
+                         da=da, du=du, dt=dt, dp=dp,
+                         in_rate=in_rate, out_rate=out_rate, bp=bp, bc=bc, la=la)
+    state.last_refresh = now
+
+def draw(state):
+    w = pane_width()
+    bar_w = w - 4   # content inside the │ accent indent
+
+    now = time.time()
+    if state.metrics is None or (now - state.last_refresh) >= METRIC_REFRESH_S:
+        refresh_metrics(state)
+    m = state.metrics
+    cpu, mu, mt, mp = m['cpu'], m['mu'], m['mt'], m['mp']
+    da, du, dt, dp = m['da'], m['du'], m['dt'], m['dp']
+    in_rate, out_rate = m['in_rate'], m['out_rate']
+    bp, bc, la = m['bp'], m['bc'], m['la']
+
+    sys.stdout.write("\033[H\033[J")
+    L = []
+    L.extend(header_block(w))
+    L.append("")
+
+    # ── CPU ─────────────────────────────────────────────
+    L.append(section_top("CPU",    f"{cpu:5.1f}%", w))
+    L.append(cont(smooth_bar(cpu, bar_w)))
+    L.append(cont(f"{TEAL}{sparkline(state.cpu_hist, bar_w, max_val=100)}{R}"))
+    L.append(cont(f"{MUTED}load  {FG}{la[0]:.2f}{R} {MUTED}·{R} "
+                  f"{FG}{la[1]:.2f}{R} {MUTED}·{R} {FG}{la[2]:.2f}{R}"))
+    L.append(section_end())
+    L.append("")
+
+    # ── Memory ──────────────────────────────────────────
+    L.append(section_top("MEMORY", f"{mp:5.1f}%", w))
+    L.append(cont(smooth_bar(mp, bar_w)))
+    L.append(cont(f"{FG}{mu:.1f}{R} {MUTED}/{R} {FG}{mt:.1f}  GB{R}   {MUTED}used{R}"))
+    L.append(section_end())
+    L.append("")
+
+    # ── Disk ────────────────────────────────────────────
+    L.append(section_top("DISK",   f"{dp:5.1f}%", w))
+    L.append(cont(smooth_bar(dp, bar_w)))
+    L.append(cont(f"{FG}{da:.0f}{R} {MUTED}/{R} {FG}{dt:.0f}  GB{R}   {MUTED}free{R}"))
+    L.append(section_end())
+    L.append("")
+
+    # ── Network ─────────────────────────────────────────
+    L.append(section_top("NETWORK", "", w))
+    max_rate = max(max(state.net_in_hist, default=1),
+                   max(state.net_out_hist, default=1), 1024)
+    L.append(cont(f"{TEAL}▼{R}  {FG}{fmt_rate(in_rate)}{R}"))
+    L.append(cont(f"{SEA}{sparkline(state.net_in_hist, bar_w, max_val=max_rate)}{R}"))
+    L.append(cont(f"{TEAL}▲{R}  {FG}{fmt_rate(out_rate)}{R}"))
+    L.append(cont(f"{SEA}{sparkline(state.net_out_hist, bar_w, max_val=max_rate)}{R}"))
+    L.append(section_end())
+    L.append("")
+
+    # ── Battery ─────────────────────────────────────────
+    if bp is not None:
+        L.append(section_top("BATTERY", f"{bp:3d}%", w))
+        L.append(cont(smooth_bar(bp, bar_w, inverse=True)))
+        if bc:
+            L.append(cont(f"{YEL}⚡{R}  {FG}charging{R}"))
+        else:
+            L.append(cont(f"{MUTED}▮  on battery{R}"))
+        L.append(section_end())
+        L.append("")
+
+    sys.stdout.write("\n".join(L) + "\n")
+    sys.stdout.flush()
+
+# ── Entry point ────────────────────────────────────────────────
+def cleanup_exit(*_):
+    sys.stdout.write("\033[?25h\n"); sys.stdout.flush()
+    sys.exit(0)
+
+def main():
+    signal.signal(signal.SIGINT,  cleanup_exit)
+    signal.signal(signal.SIGTERM, cleanup_exit)
+    sys.stdout.write("\033[?25l"); sys.stdout.flush()
+    state = State()
+    try:
+        while True:
+            draw(state)
+            time.sleep(1)
+    finally:
+        sys.stdout.write("\033[?25h"); sys.stdout.flush()
+
+if __name__ == "__main__":
+    main()

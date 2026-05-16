@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Toggle a tmux right-side sidebar pane running `phoenix-sysmon`.
+# Identifies the sidebar by its pane title ("phoenix-sysmon").
+
+set -e
+
+[ -n "$TMUX" ] || { echo "phoenix-sysmon-toggle must be run inside tmux"; exit 1; }
+
+# Look for an existing sidebar pane in the current window.
+existing=$(tmux list-panes -F '#{pane_id} #{pane_title}' | awk '$2=="phoenix-sysmon"{print $1; exit}')
+
+if [ -n "$existing" ]; then
+  tmux kill-pane -t "$existing"
+else
+  tmux split-window -h -l 34 "exec $HOME/.local/bin/phoenix-sysmon"
+  tmux select-pane -T phoenix-sysmon
+  tmux last-pane
+fi
