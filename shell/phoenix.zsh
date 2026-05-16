@@ -145,8 +145,9 @@ phoenix-welcome() {
 }
 
 # ─────────────────────────────────────────────────────────────
-#  Update check — at most once per day, fetched in the background.
-#  Shows one yellow line if origin is ahead of the local clone.
+#  Release-update check — at most once per day, fetched in the
+#  background. Compares the closest tag reachable from HEAD against
+#  the highest semver tag on origin. Notifies only on tagged releases.
 #  Disable with: export PHOENIX_NO_UPDATE_CHECK=1
 # ─────────────────────────────────────────────────────────────
 __phoenix_update_check() {
@@ -155,6 +156,7 @@ __phoenix_update_check() {
   local repo="${PHOENIX_REPO:-${${(%):-%x}:A:h:h}}"
   [[ -d "$repo/.git" ]] || return
   command git -C "$repo" rev-parse HEAD >/dev/null 2>&1 || return
+  command git -C "$repo" remote | read -r _ 2>/dev/null || return
 
   local cache="$HOME/.cache/phoenix-term"
   local stamp="$cache/last-check"
@@ -162,22 +164,29 @@ __phoenix_update_check() {
   local last=0
   [[ -f "$stamp" ]] && last=$(cat "$stamp" 2>/dev/null || echo 0)
 
-  # Background fetch at most once per 24h. Quiet & detached so it
+  # Background tag-fetch at most once per 24h. Quiet & detached so it
   # never blocks the prompt; the result is read on the *next* shell.
   if (( now - last > 86400 )); then
     mkdir -p "$cache"
     echo "$now" > "$stamp"
-    ( command git -C "$repo" fetch --quiet origin >/dev/null 2>&1 & disown ) 2>/dev/null
+    ( command git -C "$repo" fetch --quiet --tags --prune origin >/dev/null 2>&1 & disown ) 2>/dev/null
   fi
 
-  local upstream
-  upstream=$(command git -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || return
-  local behind
-  behind=$(command git -C "$repo" rev-list --count "HEAD..$upstream" 2>/dev/null) || return
-  (( behind > 0 )) || return
+  local current latest
+  current=$(command git -C "$repo" describe --tags --abbrev=0 HEAD 2>/dev/null)
+  latest=$(command git -C "$repo" tag --list 'v*' --sort=-v:refname 2>/dev/null | head -1)
+  [[ -z "$latest" ]] && return
+  [[ "$current" == "$latest" ]] && return
+
+  # If HEAD is already past the latest tag, the user is ahead — don't nag.
+  command git -C "$repo" merge-base --is-ancestor "$latest" HEAD 2>/dev/null && return
 
   local yel=$'\e[38;2;250;189;47m' dim=$'\e[38;2;120;120;120m' sea=$'\e[38;2;32;178;170m' r=$'\e[0m'
-  print -- "${yel}▲${r} ${dim}Phoenix Term:${r} ${behind} commit(s) behind ${upstream} — run ${sea}bash $repo/install.sh --update${r}"
+  if [[ -n "$current" ]]; then
+    print -- "${yel}▲${r} ${dim}Phoenix Term:${r} ${current} → ${sea}${latest}${r} — run ${sea}phoenix-term update${r}"
+  else
+    print -- "${yel}▲${r} ${dim}Phoenix Term:${r} new release ${sea}${latest}${r} available — run ${sea}phoenix-term update${r}"
+  fi
 }
 
 # Auto-show on every new interactive shell (incl. new tmux panes / Ghostty tabs).

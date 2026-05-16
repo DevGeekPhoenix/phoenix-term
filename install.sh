@@ -17,6 +17,7 @@ DIM=$'\e[38;2;120;120;120m'
 YEL=$'\e[38;2;250;189;47m'
 RED=$'\e[38;2;251;73;52m'
 GRN=$'\e[38;2;152;195;121m'
+B=$'\e[1m'
 R=$'\e[0m'
 
 say()  { printf "%s•%s %s\n" "$SEA" "$R" "$*"; }
@@ -76,6 +77,7 @@ LINKS=(
   "tmux/phoenix.conf|$HOME/.tmux.conf"
   "bin/phoenix-sysmon|$HOME/.local/bin/phoenix-sysmon"
   "bin/phoenix-sysmon-toggle|$HOME/.local/bin/phoenix-sysmon-toggle"
+  "bin/phoenix-term|$HOME/.local/bin/phoenix-term"
   "nvim/colors/phoenix.lua|$HOME/.config/nvim/colors/phoenix.lua"
   "nvim/lua/plugins/colorscheme.lua|$HOME/.config/nvim/lua/plugins/colorscheme.lua"
   "nvim/lua/lualine/themes/phoenix.lua|$HOME/.config/nvim/lua/lualine/themes/phoenix.lua"
@@ -220,7 +222,7 @@ do_install() {
     backup_and_link "$REPO/${entry%%|*}" "${entry##*|}"
   done
 
-  run chmod +x "$HOME/.local/bin/phoenix-sysmon" "$HOME/.local/bin/phoenix-sysmon-toggle"
+  run chmod +x "$HOME/.local/bin/phoenix-sysmon" "$HOME/.local/bin/phoenix-sysmon-toggle" "$HOME/.local/bin/phoenix-term"
 
   ensure_zshrc_source
 
@@ -254,8 +256,10 @@ ${SEA}  Phoenix Term installed.${R}
     Ctrl-a -        split down
 
   ${DIM}Maintenance:${R}
-    bash install.sh --doctor        check the install is healthy
-    bash install.sh --uninstall     remove and restore backups
+    ${SEA}phoenix-term${R}              everyday CLI (run with no args for help)
+    ${SEA}phoenix-term doctor${R}       check the install is healthy
+    ${SEA}phoenix-term update${R}       fetch + fast-forward from origin
+    ${SEA}phoenix-term uninstall${R}    remove and restore backups
 ${SEA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${R}
 EOF
 }
@@ -371,16 +375,15 @@ do_doctor() {
   printf "%sall green.%s\n" "$GRN" "$R"
 }
 
-# ---------- version / check / update ----------
+# ---------- version / check / update (release-tag based) ----------
+#
+# The update flow keys on git tags ("releases"), not on commits.  Users
+# only get notified when you publish a new tagged release.  Convention:
+# tag releases as `vX.Y.Z` (annotated tags are nicer but lightweight works).
 
 UPDATE_STAMP="$HOME/.cache/phoenix-term/last-check"
 
 git_in_repo() { command git -C "$REPO" "$@"; }
-
-git_upstream() {
-  # Echo the upstream ref (e.g. origin/main) or empty if not configured.
-  git_in_repo rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null
-}
 
 require_git_repo() {
   if ! git_in_repo rev-parse --git-dir >/dev/null 2>&1; then
@@ -393,94 +396,149 @@ require_git_repo() {
   fi
 }
 
+phoenix_origin_remote() {
+  # First remote with "origin" in its name; fall back to the first remote.
+  local remotes; remotes=$(git_in_repo remote 2>/dev/null)
+  if grep -qx origin <<<"$remotes"; then echo origin
+  else echo "$remotes" | head -1; fi
+}
+
+phoenix_current_release() {
+  # The closest tag reachable from HEAD (the "version" we're running).
+  # Returns empty when no tag is reachable; never errors out.
+  git_in_repo describe --tags --abbrev=0 HEAD 2>/dev/null || true
+}
+
+phoenix_latest_release_local() {
+  # Highest semver tag in the local repo, or empty if none exist.
+  git_in_repo tag --list 'v*' --sort=-v:refname 2>/dev/null | head -1 || true
+}
+
+phoenix_fetch_releases() {
+  # Fetch only tags from origin, quietly.  Touch the cache stamp so the
+  # passive shell-startup check doesn't refetch on the next prompt.
+  local remote; remote=$(phoenix_origin_remote)
+  [[ -z "$remote" ]] && { warn "no remote configured — add one with: git -C $REPO remote add origin <url>"; return 1; }
+  run git_in_repo fetch --quiet --tags --prune "$remote"
+  mkdir -p "$(dirname "$UPDATE_STAMP")"
+  date +%s > "$UPDATE_STAMP"
+}
+
 do_version() {
   require_git_repo
-  local short date branch upstream ahead behind
-  short=$(git_in_repo rev-parse --short HEAD)
+  local cur latest sha date branch ahead_commits
+  cur=$(phoenix_current_release)
+  latest=$(phoenix_latest_release_local)
+  sha=$(git_in_repo rev-parse --short HEAD)
   date=$(git_in_repo log -1 --format=%cs)
   branch=$(git_in_repo rev-parse --abbrev-ref HEAD)
-  upstream=$(git_upstream)
-  printf "%sPhoenix Term%s  %s%s%s  (%s, branch %s)\n" \
-    "$SEA" "$R" "$SEA$B" "$short" "$R" "$date" "$branch"
-  if [[ -n "$upstream" ]]; then
-    ahead=$(git_in_repo rev-list --count "$upstream..HEAD" 2>/dev/null || echo 0)
-    behind=$(git_in_repo rev-list --count "HEAD..$upstream" 2>/dev/null || echo 0)
-    printf "  vs %s: %s%d ahead%s, %s%d behind%s\n" \
-      "$upstream" "$SEA" "$ahead" "$R" "$SEA" "$behind" "$R"
+
+  if [[ -n "$cur" ]]; then
+    printf "%sPhoenix Term%s  %s%s%s  (%s · %s · branch %s)\n" \
+      "$SEA" "$R" "$SEA$B" "$cur" "$R" "$sha" "$date" "$branch"
+    # If HEAD is past the tagged commit, show distance.
+    ahead_commits=$(git_in_repo rev-list --count "$cur..HEAD" 2>/dev/null || echo 0)
+    (( ahead_commits > 0 )) && printf "  %s%d commit(s) past %s%s\n" "$DIM" "$ahead_commits" "$cur" "$R"
   else
-    printf "  %sno upstream configured%s — set one with: git -C %s push -u origin %s\n" \
-      "$DIM" "$R" "$REPO" "$branch"
+    printf "%sPhoenix Term%s  %sunreleased%s  (%s · %s · branch %s)\n" \
+      "$SEA" "$R" "$DIM" "$R" "$sha" "$date" "$branch"
+  fi
+
+  if [[ -n "$latest" && "$latest" != "$cur" ]]; then
+    printf "  %s▲ latest release: %s%s  (run %sphoenix-term update%s)\n" \
+      "$YEL" "$latest" "$R" "$SEA" "$R"
   fi
 }
 
 do_check() {
   require_git_repo
-  local upstream; upstream=$(git_upstream)
-  if [[ -z "$upstream" ]]; then
-    warn "no upstream configured — push first: git -C $REPO push -u origin \$(git -C $REPO branch --show-current)"
+  local remote; remote=$(phoenix_origin_remote)
+  if [[ -z "$remote" ]]; then
+    warn "no remote configured — add one with: git -C $REPO remote add origin <url>"
     exit 1
   fi
-  say "fetching $upstream"
-  run git_in_repo fetch --quiet "${upstream%%/*}"
-  mkdir -p "$(dirname "$UPDATE_STAMP")"
-  date +%s > "$UPDATE_STAMP"
+  say "fetching releases from $remote"
+  phoenix_fetch_releases || exit 1
 
-  local behind ahead
-  behind=$(git_in_repo rev-list --count "HEAD..$upstream" 2>/dev/null || echo 0)
-  ahead=$(git_in_repo rev-list --count "$upstream..HEAD" 2>/dev/null || echo 0)
+  local cur latest
+  cur=$(phoenix_current_release)
+  latest=$(phoenix_latest_release_local)
 
-  if (( behind == 0 )); then
-    printf "%s✓%s already up to date with %s\n" "$GRN" "$R" "$upstream"
-    (( ahead > 0 )) && printf "  %s(%d local commit(s) not yet pushed)%s\n" "$DIM" "$ahead" "$R"
+  if [[ -z "$latest" ]]; then
+    printf "%s%s no releases tagged on %s yet.%s\n" "$DIM" "·" "$remote" "$R"
+    printf "  %sTip:%s tag a release with: git -C $REPO tag v0.1.0 && git push $remote v0.1.0\n" "$DIM" "$R"
     return 0
   fi
 
-  printf "%s▲%s %d new commit(s) on %s:\n" "$YEL" "$R" "$behind" "$upstream"
-  git_in_repo log "HEAD..$upstream" --oneline --no-decorate | sed 's/^/    /'
-  printf "\n  Run %sbash install.sh --update%s to fast-forward.\n" "$SEA" "$R"
-  (( ahead > 0 )) && printf "  %s(also %d local commit(s) not yet pushed)%s\n" "$DIM" "$ahead" "$R"
+  if [[ "$cur" == "$latest" ]]; then
+    printf "%s✓%s on the latest release: %s%s%s\n" "$GRN" "$R" "$SEA$B" "$latest" "$R"
+    return 0
+  fi
+
+  if [[ -z "$cur" ]]; then
+    printf "%s▲%s no release pinned locally — latest is %s%s%s\n" "$YEL" "$R" "$SEA$B" "$latest" "$R"
+  else
+    printf "%s▲%s update available: %s%s%s → %s%s%s\n" \
+      "$YEL" "$R" "$DIM" "$cur" "$R" "$SEA$B" "$latest" "$R"
+  fi
+
+  # Show release annotation if available.
+  local notes; notes=$(git_in_repo tag -l --format='%(contents:subject)' "$latest" 2>/dev/null)
+  [[ -n "$notes" ]] && printf "  %s%s%s\n" "$DIM" "$notes" "$R"
+
+  printf "\n  Run %sphoenix-term update%s to fast-forward to %s.\n" "$SEA" "$R" "$latest"
 }
 
 do_update() {
   require_git_repo
-  local upstream; upstream=$(git_upstream)
-  if [[ -z "$upstream" ]]; then
-    warn "no upstream configured — push first: git -C $REPO push -u origin \$(git -C $REPO branch --show-current)"
-    exit 1
-  fi
   if ! git_in_repo diff --quiet || ! git_in_repo diff --cached --quiet; then
     warn "uncommitted changes in $REPO — commit or stash before --update"
     git_in_repo status --short
     exit 1
   fi
-
-  say "fetching $upstream"
-  run git_in_repo fetch --quiet "${upstream%%/*}"
-
-  local behind ahead
-  behind=$(git_in_repo rev-list --count "HEAD..$upstream" 2>/dev/null || echo 0)
-  ahead=$(git_in_repo rev-list --count "$upstream..HEAD" 2>/dev/null || echo 0)
-
-  if (( ahead > 0 )); then
-    warn "local branch is $ahead commit(s) ahead of $upstream — push or rebase first"
+  local remote; remote=$(phoenix_origin_remote)
+  if [[ -z "$remote" ]]; then
+    warn "no remote configured — add one with: git -C $REPO remote add origin <url>"
     exit 1
   fi
-  if (( behind == 0 )); then
-    say "already up to date with $upstream"
-    mkdir -p "$(dirname "$UPDATE_STAMP")"; date +%s > "$UPDATE_STAMP"
+
+  say "fetching releases from $remote"
+  phoenix_fetch_releases || exit 1
+
+  local cur latest
+  cur=$(phoenix_current_release)
+  latest=$(phoenix_latest_release_local)
+
+  if [[ -z "$latest" ]]; then
+    warn "no releases tagged on $remote yet — nothing to update to"
+    exit 1
+  fi
+  if [[ "$cur" == "$latest" ]]; then
+    say "already on the latest release: $latest"
     return 0
   fi
 
-  say "fast-forwarding $behind commit(s):"
-  git_in_repo log "HEAD..$upstream" --oneline --no-decorate | sed 's/^/    /'
-  run git_in_repo merge --ff-only "$upstream"
-  mkdir -p "$(dirname "$UPDATE_STAMP")"; date +%s > "$UPDATE_STAMP"
+  # Refuse to move backwards: if the latest release is an ancestor of HEAD,
+  # the user is ahead of the published release (probably mid-development).
+  if git_in_repo merge-base --is-ancestor "$latest" HEAD 2>/dev/null; then
+    warn "HEAD is already past $latest (you're ahead of the released version) — not moving"
+    exit 1
+  fi
+  # Refuse non-fast-forward updates (local divergence from release line).
+  if ! git_in_repo merge-base --is-ancestor HEAD "$latest" 2>/dev/null; then
+    warn "your branch has diverged from $latest — fast-forward not possible"
+    warn "resolve manually: git -C $REPO log --oneline ${cur:-HEAD}..$latest"
+    exit 1
+  fi
+
+  say "fast-forwarding ${cur:-HEAD} → $latest"
+  run git_in_repo merge --ff-only "$latest"
 
   if (( DRY_RUN )); then
     dry "would re-exec install.sh to apply any new symlinks"
     return 0
   fi
-  say "re-running install.sh from the freshly pulled tree"
+  say "re-running install.sh from $latest"
   exec bash "$REPO/install.sh"
 }
 

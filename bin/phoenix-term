@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# phoenix-term — everyday wrapper around the installer.
+# Resolves its own symlink target so it works no matter how it was invoked.
+
+set -e
+
+SELF="${BASH_SOURCE[0]}"
+while [ -L "$SELF" ]; do
+  link=$(readlink "$SELF")
+  case "$link" in
+    /*) SELF="$link" ;;
+    *)  SELF="$(cd "$(dirname "$SELF")" && pwd)/$link" ;;
+  esac
+done
+REPO="$(cd "$(dirname "$SELF")/.." && pwd)"
+INSTALL="$REPO/install.sh"
+
+if [ ! -f "$INSTALL" ]; then
+  echo "phoenix-term: cannot find install.sh at $INSTALL" >&2
+  exit 1
+fi
+
+cmd="${1:-help}"
+[ $# -gt 0 ] && shift
+
+case "$cmd" in
+  install)                exec bash "$INSTALL" "$@" ;;
+  update)                 exec bash "$INSTALL" --update "$@" ;;
+  check)                  exec bash "$INSTALL" --check "$@" ;;
+  doctor)                 exec bash "$INSTALL" --doctor "$@" ;;
+  uninstall)              exec bash "$INSTALL" --uninstall "$@" ;;
+  version|-V|--version)   exec bash "$INSTALL" --version ;;
+  where)                  echo "$REPO" ;;
+  help|-h|--help|"")
+    cat <<EOF
+phoenix-term — manage your Phoenix Term install
+
+Usage:
+  phoenix-term install        Run or refresh the installer (idempotent)
+  phoenix-term update         Fast-forward to the latest release tag and re-link
+  phoenix-term check          Fetch tags and report if a newer release exists
+  phoenix-term doctor         Healthcheck symlinks, brew, shell wiring
+  phoenix-term version        Show the release tag this clone is on
+  phoenix-term uninstall      Remove symlinks, restore most-recent backups
+  phoenix-term where          Print the repo path ($REPO)
+  phoenix-term help           Show this help
+
+Releases are tagged commits on origin (convention: vX.Y.Z). Tag a new
+release with:  git tag vX.Y.Z && git push origin vX.Y.Z
+
+Flags after the subcommand are passed through (e.g. install --dry-run).
+EOF
+    ;;
+  *)
+    echo "phoenix-term: unknown subcommand '$cmd'" >&2
+    echo "Try \`phoenix-term help\`." >&2
+    exit 2
+    ;;
+esac
