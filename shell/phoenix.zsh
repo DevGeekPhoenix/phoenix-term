@@ -7,6 +7,13 @@
 # PHOENIX_* env vars are visible to every check below.
 [ -f "$HOME/.config/phoenix-term/config.zsh" ] && source "$HOME/.config/phoenix-term/config.zsh"
 
+# Suppress zsh's "partial line at end of output" indicator (default `%`).
+# Some tool init scripts (atuin, plugin loaders) occasionally emit output
+# without a trailing newline at shell startup, which paints a `%` at the
+# top of the first screen. The partial-line preservation (CR before the
+# prompt) is still active — only the visible marker is hidden.
+PROMPT_EOL_MARK=''
+
 # Homebrew env — Apple Silicon (/opt/homebrew), Intel Mac (/usr/local), or
 # Linuxbrew if the user happens to have it. On Debian/Ubuntu without brew,
 # every brew check is silently skipped and apt-installed tools take over.
