@@ -634,15 +634,46 @@ install_zsh_fsh_linux() {
 # back to a clear manual-install pointer — phoenix works in any truecolor
 # terminal, so a missing Ghostty isn't a hard failure.
 install_ghostty_linux() {
-  command -v ghostty >/dev/null && { say "ghostty already installed"; return 0; }
-  say "installing ghostty"
-  if (( DRY_RUN )); then dry "install ghostty (snap if available, else warn)"; return 0; fi
+  # Snap → .deb fix-up: the Ghostty snap is sandboxed even when advertised
+  # as classic, which prevents `command = zsh -l` (in phoenix.config) from
+  # finding /usr/bin/zsh on the host. Result: Ghostty silently falls back
+  # to bash, phoenix.zsh never sources, no auto-tmux. The .deb path puts
+  # Ghostty in /usr/bin with full host access and resolves this.
+  if command -v ghostty >/dev/null; then
+    local ghostty_path; ghostty_path=$(command -v ghostty)
+    if [[ "$ghostty_path" == /snap/* ]]; then
+      say "removing snap ghostty (sandboxed — blocks zsh launch)"
+      if (( DRY_RUN )); then dry "snap remove ghostty"
+      else sudo_if_needed snap remove ghostty >/dev/null 2>&1 || warn "snap remove ghostty failed"; fi
+    else
+      say "ghostty already installed ($ghostty_path)"
+      return 0
+    fi
+  fi
+
+  say "installing ghostty via mkasberg/ghostty-ubuntu (.deb)"
+  if (( DRY_RUN )); then dry "run mkasberg/ghostty-ubuntu install.sh"; return 0; fi
+
+  # The mkasberg installer is the route Ghostty's own docs link to for
+  # Ubuntu/Debian. It detects distro+arch, fetches the right .deb from
+  # GitHub releases, and apt-installs it. Covers Ubuntu, Pop!_OS, Mint,
+  # Kali, Elementary, Zorin, KDE Neon, and Debian Trixie.
+  if bash -c "$(curl -fsSL https://raw.githubusercontent.com/mkasberg/ghostty-ubuntu/HEAD/install.sh)"; then
+    ok_msg "ghostty installed via .deb"
+    return 0
+  fi
+
+  warn "mkasberg ghostty .deb install failed — falling back to snap"
   if command -v snap >/dev/null; then
     if sudo_if_needed snap install ghostty --classic >/dev/null 2>&1; then
       ok_msg "ghostty installed via snap"
+      warn "  snap confinement may prevent zsh launching; if tmux/banner don't appear,"
+      warn "  remove the snap and run mkasberg's installer manually:"
+      warn "    sudo snap remove ghostty"
+      warn "    bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/mkasberg/ghostty-ubuntu/HEAD/install.sh)\""
       return 0
     fi
-    warn "snap install ghostty failed (likely community snap unavailable on this channel)"
+    warn "snap install ghostty also failed"
   fi
   warn "could not auto-install Ghostty on this distro."
   warn "install manually from https://ghostty.org/download — phoenix works without it"
