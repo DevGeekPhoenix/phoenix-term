@@ -29,8 +29,19 @@ command -v starship >/dev/null && eval "$(starship init zsh)"
 command -v zoxide >/dev/null && eval "$(zoxide init zsh --cmd cd)"
 
 # ── FZF (fuzzy finder) ──────────────────────────────────────
+# `fzf --zsh` was added in fzf 0.48 (Jan 2024). Ubuntu 24.04's apt fzf is
+# older and prints "unknown option: --zsh" to stderr. Fall back to the
+# legacy shell-integration files that Debian/Ubuntu's package ships.
 if command -v fzf >/dev/null; then
-  source <(fzf --zsh)
+  if fzf --zsh >/dev/null 2>&1; then
+    source <(fzf --zsh)
+  else
+    for __fzf_dir in /usr/share/doc/fzf/examples /usr/share/fzf/shell /opt/homebrew/opt/fzf/shell /usr/local/opt/fzf/shell; do
+      [[ -f "$__fzf_dir/key-bindings.zsh" ]] && source "$__fzf_dir/key-bindings.zsh"
+      [[ -f "$__fzf_dir/completion.zsh"   ]] && source "$__fzf_dir/completion.zsh"
+    done
+    unset __fzf_dir
+  fi
   export FZF_DEFAULT_OPTS="
     --height 60% --layout=reverse --border=rounded
     --color=bg+:#1c2027,bg:#111418,spinner:#c7910c,hl:#c7910c
