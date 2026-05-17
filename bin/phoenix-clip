@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Cross-platform clipboard sink. Reads stdin, copies to the system clipboard
+# using whatever tool is available:
+#   macOS         → pbcopy
+#   Wayland       → wl-copy   (preferred when WAYLAND_DISPLAY is set)
+#   X11           → xclip -selection clipboard  (or xsel as fallback)
+# Used by tmux/phoenix.conf so copy-mode-vi 'y' works the same on every OS.
+
+if [[ "$(uname -s)" == "Darwin" ]] && command -v pbcopy >/dev/null 2>&1; then
+  exec pbcopy
+fi
+
+if [[ -n "${WAYLAND_DISPLAY:-}" ]] && command -v wl-copy >/dev/null 2>&1; then
+  exec wl-copy
+fi
+
+if command -v xclip >/dev/null 2>&1; then
+  exec xclip -selection clipboard
+fi
+
+if command -v xsel >/dev/null 2>&1; then
+  exec xsel --clipboard --input
+fi
+
+cat >/dev/null
+exit 1

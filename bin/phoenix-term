@@ -29,6 +29,8 @@ case "$cmd" in
   check)                  exec bash "$INSTALL" --check "$@" ;;
   doctor)                 exec bash "$INSTALL" --doctor "$@" ;;
   uninstall)              exec bash "$INSTALL" --uninstall "$@" ;;
+  revert|rollback)        exec bash "$INSTALL" --revert "$@" ;;
+  backups|list-backups)   exec bash "$INSTALL" --backups "$@" ;;
   version|-V|--version)   exec bash "$INSTALL" --version ;;
   settings|config)
     # No-arg "settings" drops into the interactive menu; pass through anything else.
@@ -45,10 +47,13 @@ phoenix-term — manage your Phoenix Term install
 
 Usage:
   phoenix-term install        Run or refresh the installer (idempotent)
-  phoenix-term update         Fast-forward to the latest release tag and re-link
-  phoenix-term check          Fetch tags and report if a newer release exists
-  phoenix-term doctor         Healthcheck symlinks, brew, shell wiring
-  phoenix-term version        Show the release tag this clone is on
+  phoenix-term update         Download the latest GitHub Release and replace
+                              the install (auto-backs up the prior version)
+  phoenix-term check          Re-check whether a newer release exists
+  phoenix-term revert         Roll back to the most recent backup (alias: rollback)
+  phoenix-term backups        List available backups (alias: list-backups)
+  phoenix-term doctor         Healthcheck symlinks, packages, shell wiring
+  phoenix-term version        Show the installed release tag
   phoenix-term settings       Interactive preferences menu
     phoenix-term settings --list             Print current values
     phoenix-term settings --get KEY          Print one value
@@ -57,8 +62,10 @@ Usage:
   phoenix-term where          Print the repo path ($REPO)
   phoenix-term help           Show this help
 
-Releases are tagged commits on origin (convention: vX.Y.Z). Tag a new
-release with:  git tag vX.Y.Z && git push origin vX.Y.Z
+Updates are GitHub Releases (https://github.com/DevGeekPhoenix/phoenix-term/releases).
+Each 'update' rotates the prior install to <install-dir>.bak-<timestamp>; 'revert'
+restores the most recent one (and rotates the current install aside, so a
+revert is itself revertable).
 
 Flags after the subcommand are passed through (e.g. install --dry-run).
 EOF

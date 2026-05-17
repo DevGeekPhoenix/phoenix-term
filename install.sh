@@ -37,12 +37,14 @@ Phoenix Term installer
 
 Usage:
   bash install.sh [--dry-run]      Install or update (default)
-  bash install.sh --update         Fetch + fast-forward from origin, then re-link
-  bash install.sh --check          Report current version and whether origin has updates
-  bash install.sh --version        Print current commit + ahead/behind summary
+  bash install.sh --update         Download the latest release and replace the install
+  bash install.sh --check          Report installed version and whether a newer release exists
+  bash install.sh --version        Print installed version
+  bash install.sh --revert         Roll back to the most recent backup created by --update
+  bash install.sh --backups        List available backups (versions + timestamps)
   bash install.sh --uninstall      Remove symlinks, restore most-recent backups,
                                    strip the phoenix.zsh source line from ~/.zshrc
-  bash install.sh --doctor         Verify symlinks, brew formulas, and shell wiring
+  bash install.sh --doctor         Verify symlinks, packages, and shell wiring
   bash install.sh --settings       Manage preferences (welcome, auto-tmux, etc.)
                                     Subcommands: --list (default), --menu, --ensure,
                                     --get KEY, --set KEY=VALUE
@@ -83,6 +85,8 @@ for arg in "$@"; do
     --version|-V) MODE=version ;;
     --uninstall)  MODE=uninstall ;;
     --doctor)     MODE=doctor ;;
+    --revert)     MODE=revert ;;
+    --backups)    MODE=backups ;;
     *) warn "unknown argument: $arg"; usage; exit 2 ;;
   esac
 done
@@ -93,6 +97,227 @@ run() {
   else
     "$@"
   fi
+}
+
+# ---------- OS detection ----------
+#
+# PHOENIX_OS  ∈ { macos, debian }
+# PHOENIX_ARCH ∈ { x86_64, aarch64 }
+# Linux side covers Debian/Ubuntu and their derivatives (Mint, Pop!_OS, Kali,
+# elementary). Other distros are unsupported — we hard-fail rather than half-
+# install something broken.
+
+PHOENIX_OS=""
+PHOENIX_ARCH=""
+PHOENIX_DISTRO=""
+
+detect_os() {
+  case "$(uname -s)" in
+    Darwin) PHOENIX_OS=macos ;;
+    Linux)
+      if [[ -f /etc/os-release ]]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        PHOENIX_DISTRO="${ID:-unknown}"
+        case "$ID" in
+          ubuntu|debian|linuxmint|pop|kali|elementary|raspbian|zorin) PHOENIX_OS=debian ;;
+          *)
+            case "${ID_LIKE:-}" in
+              *debian*|*ubuntu*) PHOENIX_OS=debian ;;
+            esac
+            ;;
+        esac
+      fi
+      if [[ -z "$PHOENIX_OS" ]]; then
+        warn "unsupported Linux distro: ${PHOENIX_DISTRO:-unknown}"
+        warn "Phoenix Term supports macOS and Debian/Ubuntu derivatives only"
+        exit 1
+      fi
+      ;;
+    *) warn "unsupported OS: $(uname -s)"; exit 1 ;;
+  esac
+
+  case "$(uname -m)" in
+    x86_64|amd64) PHOENIX_ARCH=x86_64 ;;
+    aarch64|arm64) PHOENIX_ARCH=aarch64 ;;
+    *) warn "unsupported architecture: $(uname -m)"; exit 1 ;;
+  esac
+}
+
+# Wrap any command that needs root with sudo on Linux. Avoids `sudo` calls on
+# macOS (where Homebrew refuses to run as root anyway) and on Linux when
+# already running as root.
+sudo_if_needed() {
+  if [[ "$PHOENIX_OS" == "macos" ]] || [[ $EUID -eq 0 ]]; then
+    run "$@"
+  else
+    run sudo "$@"
+  fi
+}
+
+# ---------- Pre-flight checks ----------
+#
+# Run after detect_os, before anything touches the system. Each check prints
+# pass/fail and (on failure) a one-line "how to fix it." We fail fast at the
+# end if anything's red rather than getting half-installed and confusing.
+# Designed so the user sees a single actionable error message instead of a
+# mid-install curl/apt explosion.
+
+_pre_ok()  { printf "  %s✓%s %s\n" "$GRN" "$R" "$*"; }
+_pre_bad() { printf "  %s✗%s %s\n" "$RED" "$R" "$*"; }
+_pre_fix() { printf "      %s%s%s\n" "$DIM" "$*" "$R"; }
+
+# Generic: "is X on PATH"
+_pre_need_cmd() {
+  local cmd="$1" mac_fix="$2" deb_fix="$3"
+  if command -v "$cmd" >/dev/null 2>&1; then
+    _pre_ok "$cmd available"
+    return 0
+  fi
+  _pre_bad "$cmd missing"
+  case "$PHOENIX_OS" in
+    macos)  _pre_fix "$mac_fix" ;;
+    debian) _pre_fix "$deb_fix" ;;
+  esac
+  return 1
+}
+
+_pre_home_writable() {
+  if [[ -w "$HOME" ]]; then
+    _pre_ok "\$HOME writable ($HOME)"
+    return 0
+  fi
+  _pre_bad "\$HOME is not writable: $HOME"
+  _pre_fix "check permissions on your home directory"
+  return 1
+}
+
+_pre_github_reachable() {
+  if curl -fsS --max-time 8 -o /dev/null -w '%{http_code}' \
+       https://github.com 2>/dev/null | grep -qE '^(200|301|302)$'; then
+    _pre_ok "github.com reachable"
+    return 0
+  fi
+  _pre_bad "github.com unreachable"
+  _pre_fix "check network, DNS, proxy, or firewall — the installer needs github.com"
+  return 1
+}
+
+# Need ~1GB free for the brew/apt packages + LazyVim + nvim tarball + nerd font.
+_pre_disk_space() {
+  local avail_kb need_kb=1048576  # 1 GiB
+  avail_kb=$(df -k "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')
+  avail_kb=${avail_kb:-0}
+  local avail_mb=$((avail_kb/1024))
+  if (( avail_kb < need_kb )); then
+    _pre_bad "disk space: only ${avail_mb}MB free in $HOME (need ≥ 1024MB)"
+    _pre_fix "free up some space, then re-run"
+    return 1
+  fi
+  _pre_ok "disk space: ${avail_mb}MB free in $HOME"
+}
+
+# macOS-only
+_pre_not_root_macos() {
+  if [[ $EUID -ne 0 ]]; then
+    _pre_ok "running as user (not root) — Homebrew requires this"
+    return 0
+  fi
+  _pre_bad "running as root — Homebrew refuses to install as root"
+  _pre_fix "exit this shell and re-run as your regular user"
+  return 1
+}
+
+# Linux-only
+_pre_sudo_linux() {
+  if [[ $EUID -eq 0 ]]; then
+    _pre_ok "running as root — sudo not required"
+    return 0
+  fi
+  if ! command -v sudo >/dev/null 2>&1; then
+    _pre_bad "sudo missing — apt installs need root"
+    _pre_fix "as root: apt install -y sudo && usermod -aG sudo \"\$USER\""
+    return 1
+  fi
+  if sudo -n true 2>/dev/null; then
+    _pre_ok "sudo authenticated (passwordless or cached)"
+    return 0
+  fi
+  printf "  %s•%s sudo needs your password to proceed%s\n" "$SEA" "$R" "$R"
+  if sudo -v 2>/dev/null; then
+    _pre_ok "sudo authenticated"
+    return 0
+  fi
+  _pre_bad "sudo authentication failed"
+  _pre_fix "verify your account is in the sudo/wheel group"
+  return 1
+}
+
+_pre_apt_lock() {
+  # apt holds these locks during dpkg/apt-get runs; cloud-init / unattended-
+  # upgrades commonly grab them on fresh Ubuntu cloud images for 5-10 min
+  # after first boot.
+  local locks=(
+    /var/lib/dpkg/lock-frontend
+    /var/lib/dpkg/lock
+    /var/lib/apt/lists/lock
+  )
+  if ! command -v fuser >/dev/null 2>&1; then
+    _pre_ok "apt lock check skipped (fuser not present)"
+    return 0
+  fi
+  local holder l
+  for l in "${locks[@]}"; do
+    [[ -e "$l" ]] || continue
+    holder=$(fuser "$l" 2>/dev/null | tr -d ' ')
+    if [[ -n "$holder" ]]; then
+      _pre_bad "apt lock held: $l (pid $holder)"
+      _pre_fix "wait for the background package operation, or:"
+      _pre_fix "  sudo systemctl stop unattended-upgrades  &&  sudo killall apt apt-get"
+      return 1
+    fi
+  done
+  _pre_ok "apt lock free"
+}
+
+preflight() {
+  printf "\n%s•%s preflight checks  %s(%s/%s)%s\n" \
+    "$SEA" "$R" "$DIM" "$PHOENIX_OS" "$PHOENIX_ARCH" "$R"
+
+  local fail=0
+
+  # curl + tar must already exist — bootstrap.sh and install.sh both use them
+  # before any package manager could install them.
+  _pre_need_cmd curl \
+    "/usr/bin/curl ships with macOS — your install is broken" \
+    "sudo apt update && sudo apt install -y curl" || fail=1
+  _pre_need_cmd tar \
+    "/usr/bin/tar ships with macOS — your install is broken" \
+    "sudo apt install -y tar" || fail=1
+
+  _pre_home_writable    || fail=1
+  _pre_github_reachable || fail=1
+  _pre_disk_space       || fail=1
+
+  case "$PHOENIX_OS" in
+    macos)
+      _pre_not_root_macos || fail=1
+      # git on macOS comes via Xcode CLT, triggered by the Homebrew installer
+      # later in do_install — don't pre-flight it.
+      ;;
+    debian)
+      _pre_sudo_linux                                                                    || fail=1
+      _pre_need_cmd apt-get  "" "this isn't a Debian/Ubuntu derivative — detect_os bug?" || fail=1
+      _pre_apt_lock                                                                      || fail=1
+      ;;
+  esac
+
+  if (( fail )); then
+    printf "\n%s✗ preflight failed%s — fix the issues above and re-run %sbash install.sh%s.\n" \
+      "$RED" "$R" "$SEA" "$R" >&2
+    exit 1
+  fi
+  printf "%s✓%s preflight passed\n\n" "$GRN" "$R"
 }
 
 # src-relative-to-repo|absolute-destination
@@ -107,6 +332,7 @@ LINKS=(
   "bin/phoenix-banner|$HOME/.local/bin/phoenix-banner"
   "bin/phoenix-tmux-init|$HOME/.local/bin/phoenix-tmux-init"
   "bin/phoenix-tmux-rebalance|$HOME/.local/bin/phoenix-tmux-rebalance"
+  "bin/phoenix-clip|$HOME/.local/bin/phoenix-clip"
   "nvim/colors/phoenix.lua|$HOME/.config/nvim/colors/phoenix.lua"
   "nvim/lua/plugins/colorscheme.lua|$HOME/.config/nvim/lua/plugins/colorscheme.lua"
   "nvim/lua/lualine/themes/phoenix.lua|$HOME/.config/nvim/lua/lualine/themes/phoenix.lua"
@@ -115,8 +341,36 @@ LINKS=(
 BREW_FORMULAS=(
   tmux starship zoxide fzf eza bat fd ripgrep lazygit gh atuin yazi
   btop tldr zsh-autosuggestions zsh-fast-syntax-highlighting figlet
+  neovim
 )
 BREW_CASKS=(ghostty font-comic-shanns-mono-nerd-font)
+
+# Debian/Ubuntu — packages from apt. Several Phoenix tools aren't in apt
+# (starship, zoxide, eza, lazygit, atuin, yazi, neovim ≥ 0.9, ghostty,
+# zsh-fast-syntax-highlighting); those install via their official scripts or
+# GitHub releases in install_linux_extras().
+#
+# Anything in this list that isn't in the distro's apt index gets filtered
+# out before install (so Ubuntu 20.04 / Debian 11 — which don't package btop —
+# still install cleanly; phoenix.zsh has `command -v` guards on the affected
+# aliases so missing tools degrade silently).
+APT_PACKAGES=(
+  zsh tmux git curl wget ca-certificates
+  figlet fzf ripgrep btop tldr
+  zsh-autosuggestions
+  python3 build-essential
+  xclip wl-clipboard
+  fontconfig unzip tar
+  bat fd-find
+)
+
+# Official neovim stable tarball — pinned to the "stable" tag so we always
+# get the latest release supported by LazyVim (≥ 0.9).
+NVIM_LINUX_TARBALL_URL_X86="https://github.com/neovim/neovim/releases/download/stable/nvim-linux-x86_64.tar.gz"
+NVIM_LINUX_TARBALL_URL_ARM="https://github.com/neovim/neovim/releases/download/stable/nvim-linux-arm64.tar.gz"
+
+# Comic Shanns Mono Nerd Font release zip.
+NERD_FONT_ZIP_URL="https://github.com/ryanoasis/nerd-fonts/releases/latest/download/ComicShannsMono.zip"
 
 SOURCE_LINE="source $REPO/shell/phoenix.zsh"
 SOURCE_LINE_PATTERN='^source .+/shell/phoenix\.zsh$'
@@ -148,6 +402,292 @@ install_brew_packages() {
       brew install --cask "$c" 2>&1 | tail -2 || warn "cask $c failed — install manually if needed"
     fi
   done
+}
+
+# ---------- Linux (Debian/Ubuntu) installers ----------
+#
+# Each helper is idempotent: it checks for the tool/file first and only
+# fetches when missing. Anything that touches /usr/local or /etc goes through
+# `sudo_if_needed`; user-owned paths (~/.local/bin, ~/.local/share, ~/.zsh)
+# don't.
+
+install_apt_packages() {
+  # Refresh package index once so apt-cache show + missing-package detection
+  # don't see a stale state.
+  sudo_if_needed apt-get update -qq
+
+  # Filter to packages this distro actually carries — older Ubuntu/Debian
+  # don't have btop, for example. Anything filtered gets a one-line warning
+  # but doesn't abort the install.
+  local available=() skipped=()
+  for pkg in "${APT_PACKAGES[@]}"; do
+    if apt-cache show "$pkg" >/dev/null 2>&1; then
+      available+=("$pkg")
+    else
+      skipped+=("$pkg")
+    fi
+  done
+  if (( ${#skipped[@]} > 0 )); then
+    warn "apt packages not in this distro's index (skipping): ${skipped[*]}"
+  fi
+
+  local missing=()
+  for pkg in "${available[@]}"; do
+    dpkg -s "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
+  done
+  if (( ${#missing[@]} == 0 )); then
+    say "apt packages already installed (${#available[@]}/${#available[@]})"
+    return 0
+  fi
+  say "installing apt packages (${#missing[@]} missing): ${missing[*]}"
+  sudo_if_needed apt-get install -y "${missing[@]}"
+}
+
+# Debian ships `bat` as `batcat` and `fd` as `fdfind` to avoid name conflicts.
+# phoenix.zsh expects `bat` and `fd` — symlink them into ~/.local/bin.
+link_debian_renamed_binaries() {
+  run mkdir -p "$HOME/.local/bin"
+  if [[ -x /usr/bin/batcat && ! -e "$HOME/.local/bin/bat" ]]; then
+    run ln -s /usr/bin/batcat "$HOME/.local/bin/bat"
+    say "linked batcat → ~/.local/bin/bat"
+  fi
+  if [[ -x /usr/bin/fdfind && ! -e "$HOME/.local/bin/fd" ]]; then
+    run ln -s /usr/bin/fdfind "$HOME/.local/bin/fd"
+    say "linked fdfind → ~/.local/bin/fd"
+  fi
+}
+
+install_starship_linux() {
+  command -v starship >/dev/null && return 0
+  say "installing starship"
+  if (( DRY_RUN )); then
+    dry "curl starship install script | sh -s -- -y"
+    return 0
+  fi
+  curl -fsSL https://starship.rs/install.sh | sh -s -- -y -b "$HOME/.local/bin"
+}
+
+install_zoxide_linux() {
+  command -v zoxide >/dev/null && return 0
+  say "installing zoxide"
+  if (( DRY_RUN )); then
+    dry "curl zoxide install script | bash"
+    return 0
+  fi
+  curl -fsSL https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | bash
+}
+
+install_atuin_linux() {
+  command -v atuin >/dev/null && return 0
+  say "installing atuin"
+  if (( DRY_RUN )); then
+    dry "curl atuin install script | sh"
+    return 0
+  fi
+  curl --proto '=https' --tlsv1.2 -LsSf https://setup.atuin.sh | sh
+}
+
+install_gh_linux() {
+  command -v gh >/dev/null && return 0
+  say "installing GitHub CLI"
+  if (( DRY_RUN )); then
+    dry "add cli.github.com apt repo and install gh"
+    return 0
+  fi
+  local keyring=/etc/apt/keyrings/githubcli-archive-keyring.gpg
+  sudo_if_needed mkdir -p -m 755 /etc/apt/keyrings
+  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    | sudo_if_needed tee "$keyring" >/dev/null
+  sudo_if_needed chmod go+r "$keyring"
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=$keyring] https://cli.github.com/packages stable main" \
+    | sudo_if_needed tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+  sudo_if_needed apt-get update -qq
+  sudo_if_needed apt-get install -y gh
+}
+
+# Resolve the latest release tag for a GitHub repo. Uses the /releases/latest
+# redirect — same trick as bootstrap.sh — so we sidestep the 60-req/hr API
+# rate limit. Returns empty if no releases or network fails; callers fall
+# back to a pinned default tag.
+gh_latest_tag() {
+  local repo="$1" resolved tag
+  resolved=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+    "https://github.com/$repo/releases/latest" 2>/dev/null || true)
+  tag="${resolved##*/tag/}"
+  [[ -z "$tag" || "$tag" == "$resolved" ]] && return 1
+  echo "$tag"
+}
+
+install_eza_linux() {
+  command -v eza >/dev/null && return 0
+  # Ubuntu 24.04+ has eza in apt. Try that first; fall back to GitHub release.
+  if apt-cache show eza >/dev/null 2>&1; then
+    say "installing eza (apt)"
+    sudo_if_needed apt-get install -y eza
+    return 0
+  fi
+  say "installing eza (GitHub release)"
+  if (( DRY_RUN )); then dry "fetch eza release binary"; return 0; fi
+  local tag arch
+  tag=$(gh_latest_tag eza-community/eza); tag="${tag:-v0.18.0}"
+  case "$PHOENIX_ARCH" in
+    x86_64)  arch=x86_64-unknown-linux-gnu ;;
+    aarch64) arch=aarch64-unknown-linux-gnu ;;
+  esac
+  local tmp; tmp=$(mktemp -d)
+  curl -fsSL -o "$tmp/eza.tar.gz" "https://github.com/eza-community/eza/releases/download/$tag/eza_${arch}.tar.gz"
+  tar -xzf "$tmp/eza.tar.gz" -C "$tmp"
+  mkdir -p "$HOME/.local/bin"
+  mv "$tmp/eza" "$HOME/.local/bin/eza"
+  chmod +x "$HOME/.local/bin/eza"
+  rm -rf "$tmp"
+}
+
+install_lazygit_linux() {
+  command -v lazygit >/dev/null && return 0
+  say "installing lazygit (GitHub release)"
+  if (( DRY_RUN )); then dry "fetch lazygit release binary"; return 0; fi
+  local tag ver arch
+  tag=$(gh_latest_tag jesseduffield/lazygit); tag="${tag:-v0.44.1}"
+  ver="${tag#v}"
+  case "$PHOENIX_ARCH" in
+    x86_64)  arch=Linux_x86_64 ;;
+    aarch64) arch=Linux_arm64 ;;
+  esac
+  local tmp; tmp=$(mktemp -d)
+  curl -fsSL -o "$tmp/lazygit.tar.gz" "https://github.com/jesseduffield/lazygit/releases/download/$tag/lazygit_${ver}_${arch}.tar.gz"
+  tar -xzf "$tmp/lazygit.tar.gz" -C "$tmp" lazygit
+  mkdir -p "$HOME/.local/bin"
+  mv "$tmp/lazygit" "$HOME/.local/bin/lazygit"
+  chmod +x "$HOME/.local/bin/lazygit"
+  rm -rf "$tmp"
+}
+
+install_yazi_linux() {
+  command -v yazi >/dev/null && return 0
+  say "installing yazi (GitHub release)"
+  if (( DRY_RUN )); then dry "fetch yazi release binary"; return 0; fi
+  local tag arch
+  tag=$(gh_latest_tag sxyazi/yazi); tag="${tag:-v0.3.3}"
+  case "$PHOENIX_ARCH" in
+    x86_64)  arch=x86_64-unknown-linux-gnu ;;
+    aarch64) arch=aarch64-unknown-linux-gnu ;;
+  esac
+  local tmp; tmp=$(mktemp -d)
+  curl -fsSL -o "$tmp/yazi.zip" "https://github.com/sxyazi/yazi/releases/download/$tag/yazi-${arch}.zip"
+  unzip -q "$tmp/yazi.zip" -d "$tmp"
+  mkdir -p "$HOME/.local/bin"
+  mv "$tmp/yazi-${arch}/yazi" "$HOME/.local/bin/yazi"
+  mv "$tmp/yazi-${arch}/ya"   "$HOME/.local/bin/ya" 2>/dev/null || true
+  chmod +x "$HOME/.local/bin/yazi"
+  rm -rf "$tmp"
+}
+
+# Apt's `neovim` is too old for LazyVim on most Debian/Ubuntu LTS releases
+# (LazyVim wants ≥ 0.9). Install the official stable tarball into /opt
+# instead, with a /usr/local/bin/nvim symlink. Re-runnable: replaces the
+# old install if `stable` has moved.
+install_neovim_linux() {
+  if command -v nvim >/dev/null; then
+    local ver
+    ver=$(nvim --version 2>/dev/null | head -1 | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    if [[ -n "$ver" ]]; then
+      local maj min
+      maj=$(echo "$ver" | cut -d. -f1 | tr -d v)
+      min=$(echo "$ver" | cut -d. -f2)
+      if (( maj > 0 || (maj == 0 && min >= 9) )); then
+        say "neovim already installed ($ver)"
+        return 0
+      fi
+      say "neovim $ver is too old for LazyVim — upgrading"
+    fi
+  fi
+  say "installing neovim stable (GitHub release)"
+  if (( DRY_RUN )); then dry "fetch neovim stable tarball, extract to /opt"; return 0; fi
+  local url
+  case "$PHOENIX_ARCH" in
+    x86_64)  url="$NVIM_LINUX_TARBALL_URL_X86" ;;
+    aarch64) url="$NVIM_LINUX_TARBALL_URL_ARM" ;;
+  esac
+  local tmp; tmp=$(mktemp -d)
+  curl -fsSL -o "$tmp/nvim.tar.gz" "$url"
+  sudo_if_needed mkdir -p /opt
+  sudo_if_needed rm -rf /opt/nvim-linux-x86_64 /opt/nvim-linux-arm64 /opt/nvim-linux64
+  sudo_if_needed tar -C /opt -xzf "$tmp/nvim.tar.gz"
+  local extracted
+  extracted=$(tar -tzf "$tmp/nvim.tar.gz" | head -1 | cut -d/ -f1)
+  sudo_if_needed ln -sf "/opt/$extracted/bin/nvim" /usr/local/bin/nvim
+  rm -rf "$tmp"
+}
+
+# zsh-fast-syntax-highlighting isn't in apt. Clone into ~/.zsh/plugins
+# so phoenix.zsh can source it on Linux.
+install_zsh_fsh_linux() {
+  local dst="$HOME/.zsh/plugins/fast-syntax-highlighting"
+  [[ -d "$dst" ]] && return 0
+  say "installing zsh-fast-syntax-highlighting"
+  run git clone --depth 1 https://github.com/zdharma-continuum/fast-syntax-highlighting "$dst"
+}
+
+# Ghostty doesn't have an official apt repo or universal .deb yet. We try
+# snap (community-published snap exists at snapcraft.io/ghostty) and fall
+# back to a clear manual-install pointer — phoenix works in any truecolor
+# terminal, so a missing Ghostty isn't a hard failure.
+install_ghostty_linux() {
+  command -v ghostty >/dev/null && { say "ghostty already installed"; return 0; }
+  say "installing ghostty"
+  if (( DRY_RUN )); then dry "install ghostty (snap if available, else warn)"; return 0; fi
+  if command -v snap >/dev/null; then
+    if sudo_if_needed snap install ghostty --classic >/dev/null 2>&1; then
+      ok_msg "ghostty installed via snap"
+      return 0
+    fi
+    warn "snap install ghostty failed (likely community snap unavailable on this channel)"
+  fi
+  warn "could not auto-install Ghostty on this distro."
+  warn "install manually from https://ghostty.org/download — phoenix works without it"
+  warn "in any truecolor terminal (Alacritty, Kitty, foot, GNOME Terminal)."
+  return 0
+}
+
+# Tiny helper for green confirmation lines, matching `ok` used in doctor.
+ok_msg() { printf "  %s✓%s %s\n" "$GRN" "$R" "$*"; }
+
+install_nerd_font_linux() {
+  local font_dir="$HOME/.local/share/fonts/ComicShannsMono"
+  if [[ -d "$font_dir" ]] && ls "$font_dir"/*.ttf >/dev/null 2>&1; then
+    say "ComicShannsMono Nerd Font already installed"
+    return 0
+  fi
+  say "installing ComicShannsMono Nerd Font"
+  if (( DRY_RUN )); then dry "fetch nerd font zip, extract to $font_dir, fc-cache"; return 0; fi
+  run mkdir -p "$font_dir"
+  local tmp; tmp=$(mktemp -d)
+  curl -fsSL -o "$tmp/font.zip" "$NERD_FONT_ZIP_URL"
+  unzip -qo "$tmp/font.zip" -d "$font_dir"
+  rm -rf "$tmp"
+  command -v fc-cache >/dev/null && run fc-cache -f "$font_dir"
+}
+
+# Each helper runs in a subshell so `set -e` inside it stays armed (bash
+# disables errexit when a function is on the LHS of `||`, which would let
+# a mid-function curl failure cascade silently through later commands).
+# None of these is fatal because phoenix.zsh has `command -v` guards on
+# every alias they back, and the installer is fully idempotent — the user
+# can re-run `bash install.sh` to retry anything that didn't take.
+install_linux_extras() {
+  ( link_debian_renamed_binaries ) || warn "renaming bat/fd symlinks failed"
+  ( install_starship_linux )       || warn "starship install failed — phoenix prompt won't show until installed"
+  ( install_zoxide_linux )         || warn "zoxide install failed — 'cd <fragment>' won't work"
+  ( install_atuin_linux )          || warn "atuin install failed — Ctrl-R history search won't work"
+  ( install_gh_linux )             || warn "gh install failed — try later: sudo apt install gh (after the cli.github.com repo step)"
+  ( install_eza_linux )            || warn "eza install failed — 'ls' alias will fall back to default ls"
+  ( install_lazygit_linux )        || warn "lazygit install failed — 'lg' alias unavailable"
+  ( install_yazi_linux )           || warn "yazi install failed — 'y' file-manager alias unavailable"
+  ( install_neovim_linux )         || warn "neovim install failed — LazyVim won't run; install nvim ≥ 0.9 and re-run"
+  ( install_zsh_fsh_linux )        || warn "zsh-fast-syntax-highlighting clone failed — syntax highlighting off"
+  ( install_ghostty_linux )        || warn "ghostty install failed — see message above"
+  ( install_nerd_font_linux )      || warn "nerd font install failed — terminal will fall back to default font"
 }
 
 backup_and_link() {
@@ -202,11 +742,7 @@ ensure_zshrc_source() {
   fi
 }
 
-do_install() {
-  if [[ "$(uname -s)" != "Darwin" ]]; then
-    warn "Phoenix Term targets macOS; install on Linux at your own risk."
-  fi
-
+install_packages_macos() {
   if ! command -v brew >/dev/null; then
     say "installing Homebrew"
     if (( DRY_RUN )); then
@@ -216,9 +752,25 @@ do_install() {
       eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null || /usr/local/bin/brew shellenv)"
     fi
   fi
-
   say "installing brew packages"
   install_brew_packages
+}
+
+install_packages_debian() {
+  say "installing apt packages"
+  install_apt_packages
+  say "installing Linux extras (starship, eza, lazygit, neovim, ghostty, fonts, …)"
+  install_linux_extras
+}
+
+do_install() {
+  detect_os
+  preflight
+
+  case "$PHOENIX_OS" in
+    macos)  install_packages_macos ;;
+    debian) install_packages_debian ;;
+  esac
 
   if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
     say "installing Oh-My-Zsh"
@@ -240,11 +792,41 @@ do_install() {
     run git clone --depth 1 https://github.com/tmux-plugins/tpm "$HOME/.tmux/plugins/tpm"
   fi
 
-  local figlet_fonts
-  figlet_fonts="$(brew --prefix 2>/dev/null)/share/figlet/fonts"
-  if [[ -d "$figlet_fonts" && ! -f "$figlet_fonts/ANSI_Shadow.flf" ]]; then
+  # LazyVim starter — only bootstrap when no nvim config exists. Phoenix's
+  # three nvim files get symlinked on top by the LINKS loop below. Must run
+  # BEFORE that loop: LazyVim clones into ~/.config/nvim and refuses if the
+  # dir is non-empty (a stray symlink from a previous run would block it).
+  if [[ ! -e "$HOME/.config/nvim/init.lua" ]]; then
+    say "bootstrapping LazyVim starter into ~/.config/nvim"
+    if (( DRY_RUN )); then
+      dry "git clone LazyVim/starter ~/.config/nvim && rm -rf ~/.config/nvim/.git"
+    else
+      if [[ -d "$HOME/.config/nvim" ]] && [[ -n "$(ls -A "$HOME/.config/nvim" 2>/dev/null)" ]]; then
+        local bak="$HOME/.config/nvim.bak-$(date +%Y%m%d%H%M%S)"
+        mv "$HOME/.config/nvim" "$bak"
+        say "backed up ~/.config/nvim → $bak"
+      fi
+      git clone --depth 1 https://github.com/LazyVim/starter "$HOME/.config/nvim"
+      rm -rf "$HOME/.config/nvim/.git"
+    fi
+  fi
+
+  local figlet_fonts=""
+  case "$PHOENIX_OS" in
+    macos)  figlet_fonts="$(brew --prefix 2>/dev/null)/share/figlet/fonts" ;;
+    debian)
+      for d in /usr/share/figlet /usr/share/figlet/fonts; do
+        [[ -d "$d" ]] && figlet_fonts="$d" && break
+      done
+      ;;
+  esac
+  if [[ -n "$figlet_fonts" && -d "$figlet_fonts" && ! -f "$figlet_fonts/ANSI_Shadow.flf" ]]; then
     say "installing ANSI_Shadow figlet font"
-    run cp "$REPO/fonts/ANSI_Shadow.flf" "$figlet_fonts/"
+    if [[ "$PHOENIX_OS" == "debian" ]]; then
+      sudo_if_needed cp "$REPO/fonts/ANSI_Shadow.flf" "$figlet_fonts/"
+    else
+      run cp "$REPO/fonts/ANSI_Shadow.flf" "$figlet_fonts/"
+    fi
   fi
 
   for entry in "${LINKS[@]}"; do
@@ -257,7 +839,8 @@ do_install() {
     "$HOME/.local/bin/phoenix-term" \
     "$HOME/.local/bin/phoenix-banner" \
     "$HOME/.local/bin/phoenix-tmux-init" \
-    "$HOME/.local/bin/phoenix-tmux-rebalance"
+    "$HOME/.local/bin/phoenix-tmux-rebalance" \
+    "$HOME/.local/bin/phoenix-clip"
 
   ensure_zshrc_source
 
@@ -364,8 +947,10 @@ do_uninstall() {
 # ---------- doctor ----------
 
 do_doctor() {
+  detect_os
   local fail=0
-  printf "%sPhoenix Term — healthcheck%s\n\n" "$SEA" "$R"
+  printf "%sPhoenix Term — healthcheck%s  %s(%s/%s)%s\n\n" \
+    "$SEA" "$R" "$DIM" "$PHOENIX_OS" "$PHOENIX_ARCH" "$R"
 
   printf "%ssymlinks%s\n" "$DIM" "$R"
   for entry in "${LINKS[@]}"; do
@@ -385,21 +970,50 @@ do_doctor() {
     ok "$dest"
   done
 
-  printf "\n%sbrew formulas%s\n" "$DIM" "$R"
-  if command -v brew >/dev/null; then
-    local installed
-    installed=$(brew list --formula -1 2>/dev/null || true)
-    for f in "${BREW_FORMULAS[@]}"; do
-      if grep -qx "$f" <<<"$installed"; then ok "$f"; else bad "$f"; fail=1; fi
-    done
-    printf "\n%sbrew casks%s\n" "$DIM" "$R"
-    installed=$(brew list --cask -1 2>/dev/null || true)
-    for c in "${BREW_CASKS[@]}"; do
-      if grep -qx "$c" <<<"$installed"; then ok "$c"; else bad "$c"; fail=1; fi
-    done
-  else
-    bad "brew not in PATH"; fail=1
-  fi
+  case "$PHOENIX_OS" in
+    macos)
+      printf "\n%sbrew formulas%s\n" "$DIM" "$R"
+      if command -v brew >/dev/null; then
+        local installed
+        installed=$(brew list --formula -1 2>/dev/null || true)
+        for f in "${BREW_FORMULAS[@]}"; do
+          if grep -qx "$f" <<<"$installed"; then ok "$f"; else bad "$f"; fail=1; fi
+        done
+        printf "\n%sbrew casks%s\n" "$DIM" "$R"
+        installed=$(brew list --cask -1 2>/dev/null || true)
+        for c in "${BREW_CASKS[@]}"; do
+          if grep -qx "$c" <<<"$installed"; then ok "$c"; else bad "$c"; fail=1; fi
+        done
+      else
+        bad "brew not in PATH"; fail=1
+      fi
+      ;;
+    debian)
+      printf "\n%sapt packages%s\n" "$DIM" "$R"
+      for pkg in "${APT_PACKAGES[@]}"; do
+        if dpkg -s "$pkg" >/dev/null 2>&1; then ok "$pkg"; else bad "$pkg"; fail=1; fi
+      done
+      printf "\n%sLinux extras%s\n" "$DIM" "$R"
+      local tool
+      for tool in starship zoxide atuin gh eza lazygit yazi nvim; do
+        if command -v "$tool" >/dev/null; then ok "$tool ($(command -v "$tool"))"
+        else bad "$tool not in PATH"; fail=1; fi
+      done
+      if [[ -d "$HOME/.zsh/plugins/fast-syntax-highlighting" ]]; then
+        ok "zsh-fast-syntax-highlighting"
+      else
+        bad "zsh-fast-syntax-highlighting missing"; fail=1
+      fi
+      if [[ -d "$HOME/.local/share/fonts/ComicShannsMono" ]] \
+         && ls "$HOME/.local/share/fonts/ComicShannsMono"/*.ttf >/dev/null 2>&1; then
+        ok "ComicShannsMono Nerd Font"
+      else
+        bad "ComicShannsMono Nerd Font missing"; fail=1
+      fi
+      if command -v ghostty >/dev/null; then ok "ghostty ($(command -v ghostty))"
+      else bad "ghostty not in PATH — install manually if needed"; fail=1; fi
+      ;;
+  esac
 
   printf "\n%sshell wiring%s\n" "$DIM" "$R"
   if [[ -f "$HOME/.zshrc" ]] && grep -Fqx "$SOURCE_LINE" "$HOME/.zshrc"; then
@@ -412,9 +1026,28 @@ do_doctor() {
   fi
 
   printf "\n%sfiglet font%s\n" "$DIM" "$R"
-  local figlet_fonts; figlet_fonts="$(brew --prefix 2>/dev/null)/share/figlet/fonts"
-  if [[ -f "$figlet_fonts/ANSI_Shadow.flf" ]]; then ok "ANSI_Shadow.flf installed"
-  else bad "ANSI_Shadow.flf missing in $figlet_fonts"; fail=1; fi
+  local figlet_fonts=""
+  case "$PHOENIX_OS" in
+    macos) figlet_fonts="$(brew --prefix 2>/dev/null)/share/figlet/fonts" ;;
+    debian)
+      for d in /usr/share/figlet /usr/share/figlet/fonts; do
+        [[ -d "$d" ]] && figlet_fonts="$d" && break
+      done
+      ;;
+  esac
+  if [[ -n "$figlet_fonts" && -f "$figlet_fonts/ANSI_Shadow.flf" ]]; then
+    ok "ANSI_Shadow.flf installed ($figlet_fonts)"
+  else
+    bad "ANSI_Shadow.flf missing in ${figlet_fonts:-(figlet not installed)}"; fail=1
+  fi
+
+  printf "\n%sruntime deps%s\n" "$DIM" "$R"
+  if command -v python3 >/dev/null; then ok "python3 ($(python3 --version 2>&1))"
+  else bad "python3 missing — phoenix-sysmon won't run"; fail=1; fi
+  if command -v nvim >/dev/null; then ok "nvim ($(nvim --version | head -1))"
+  else bad "nvim missing"; fail=1; fi
+  if [[ -f "$HOME/.config/nvim/init.lua" ]]; then ok "~/.config/nvim/init.lua (LazyVim)"
+  else bad "~/.config/nvim/init.lua missing — LazyVim not bootstrapped"; fail=1; fi
 
   printf "\n"
   if (( fail )); then
@@ -424,170 +1057,247 @@ do_doctor() {
   printf "%sall green.%s\n" "$GRN" "$R"
 }
 
-# ---------- version / check / update (release-tag based) ----------
+# ---------- version / check / update (GitHub Releases over HTTPS) ----------
 #
-# The update flow keys on git tags ("releases"), not on commits.  Users
-# only get notified when you publish a new tagged release.  Convention:
-# tag releases as `vX.Y.Z` (annotated tags are nicer but lightweight works).
+# Updates key on GitHub *Releases*, not raw git tags.  Users get notified when
+# a new release is published on github.com/$PHOENIX_GH_REPO/releases.
+#
+# How "latest" is resolved:
+#   curl -I github.com/$repo/releases/latest  →  302 Location: .../tag/vX.Y.Z
+# The redirect resolves without API auth or the 60-req/hr unauthenticated
+# rate limit, so the daily check from every interactive shell stays cheap.
+#
+# Installed version is the contents of $REPO/.version (written by
+# bootstrap.sh on install and by do_update after each successful update).
+# Git clones used for development don't have it — do_version falls back to
+# `git describe` so dev workflows still print something sensible.
 
+PHOENIX_GH_REPO="${PHOENIX_GH_REPO:-DevGeekPhoenix/phoenix-term}"
 UPDATE_STAMP="$HOME/.cache/phoenix-term/last-check"
+LATEST_CACHE="$HOME/.cache/phoenix-term/latest-release"
+VERSION_FILE="$REPO/.version"
 
-git_in_repo() { command git -C "$REPO" "$@"; }
-
-require_git_repo() {
-  if ! git_in_repo rev-parse --git-dir >/dev/null 2>&1; then
-    warn "$REPO is not a git repository — initialize with: git -C $REPO init"
-    exit 1
+phoenix_current_version() {
+  # The installed release tag. Empty if this is a dev clone with no .version.
+  if [[ -f "$VERSION_FILE" ]]; then
+    head -1 "$VERSION_FILE" | tr -d '[:space:]'
+    return 0
   fi
-  if ! git_in_repo rev-parse HEAD >/dev/null 2>&1; then
-    warn "no commits in $REPO yet — create one before checking for updates"
-    exit 1
+  if command git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
+    command git -C "$REPO" describe --tags --abbrev=0 HEAD 2>/dev/null || true
   fi
 }
 
-phoenix_origin_remote() {
-  # First remote with "origin" in its name; fall back to the first remote.
-  local remotes; remotes=$(git_in_repo remote 2>/dev/null)
-  if grep -qx origin <<<"$remotes"; then echo origin
-  else echo "$remotes" | head -1; fi
-}
-
-phoenix_current_release() {
-  # The closest tag reachable from HEAD (the "version" we're running).
-  # Returns empty when no tag is reachable; never errors out.
-  git_in_repo describe --tags --abbrev=0 HEAD 2>/dev/null || true
-}
-
-phoenix_latest_release_local() {
-  # Highest semver tag in the local repo, or empty if none exist.
-  git_in_repo tag --list 'v*' --sort=-v:refname 2>/dev/null | head -1 || true
-}
-
-phoenix_fetch_releases() {
-  # Fetch only tags from origin, quietly.  Touch the cache stamp so the
-  # passive shell-startup check doesn't refetch on the next prompt.
-  local remote; remote=$(phoenix_origin_remote)
-  [[ -z "$remote" ]] && { warn "no remote configured — add one with: git -C $REPO remote add origin <url>"; return 1; }
-  run git_in_repo fetch --quiet --tags --prune "$remote"
-  mkdir -p "$(dirname "$UPDATE_STAMP")"
+phoenix_fetch_latest_release() {
+  # Resolve the latest published Release via the /releases/latest redirect.
+  # On success, cache the tag and bump the freshness stamp.
+  local resolved tag
+  resolved=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+    "https://github.com/$PHOENIX_GH_REPO/releases/latest" 2>/dev/null || true)
+  tag="${resolved##*/tag/}"
+  if [[ -z "$tag" || "$tag" == "$resolved" ]]; then
+    return 1
+  fi
+  mkdir -p "$(dirname "$LATEST_CACHE")"
+  printf '%s\n' "$tag" > "$LATEST_CACHE"
   date +%s > "$UPDATE_STAMP"
+  printf '%s\n' "$tag"
+}
+
+phoenix_latest_release_cached() {
+  # Read the cached tag if it exists.
+  [[ -f "$LATEST_CACHE" ]] && head -1 "$LATEST_CACHE" | tr -d '[:space:]'
 }
 
 do_version() {
-  require_git_repo
-  local cur latest sha date branch ahead_commits
-  cur=$(phoenix_current_release)
-  latest=$(phoenix_latest_release_local)
-  sha=$(git_in_repo rev-parse --short HEAD)
-  date=$(git_in_repo log -1 --format=%cs)
-  branch=$(git_in_repo rev-parse --abbrev-ref HEAD)
+  local cur cached
+  cur=$(phoenix_current_version)
+  cached=$(phoenix_latest_release_cached)
 
   if [[ -n "$cur" ]]; then
-    printf "%sPhoenix Term%s  %s%s%s  (%s · %s · branch %s)\n" \
-      "$SEA" "$R" "$SEA$B" "$cur" "$R" "$sha" "$date" "$branch"
-    # If HEAD is past the tagged commit, show distance.
-    ahead_commits=$(git_in_repo rev-list --count "$cur..HEAD" 2>/dev/null || echo 0)
-    (( ahead_commits > 0 )) && printf "  %s%d commit(s) past %s%s\n" "$DIM" "$ahead_commits" "$cur" "$R"
+    printf "%sPhoenix Term%s  %s%s%s  (%s)\n" \
+      "$SEA" "$R" "$SEA$B" "$cur" "$R" "$REPO"
   else
-    printf "%sPhoenix Term%s  %sunreleased%s  (%s · %s · branch %s)\n" \
-      "$SEA" "$R" "$DIM" "$R" "$sha" "$date" "$branch"
+    printf "%sPhoenix Term%s  %sdev clone%s  (%s)\n" \
+      "$SEA" "$R" "$DIM" "$R" "$REPO"
   fi
 
-  if [[ -n "$latest" && "$latest" != "$cur" ]]; then
+  if [[ -n "$cached" && "$cached" != "$cur" ]]; then
     printf "  %s▲ latest release: %s%s  (run %sphoenix-term update%s)\n" \
-      "$YEL" "$latest" "$R" "$SEA" "$R"
+      "$YEL" "$cached" "$R" "$SEA" "$R"
   fi
 }
 
 do_check() {
-  require_git_repo
-  local remote; remote=$(phoenix_origin_remote)
-  if [[ -z "$remote" ]]; then
-    warn "no remote configured — add one with: git -C $REPO remote add origin <url>"
-    exit 1
-  fi
-  say "fetching releases from $remote"
-  phoenix_fetch_releases || exit 1
+  say "checking latest release on $PHOENIX_GH_REPO"
+  local latest cur
+  latest=$(phoenix_fetch_latest_release) \
+    || { warn "could not resolve latest release — network down or no releases published yet"; exit 1; }
+  cur=$(phoenix_current_version)
 
-  local cur latest
-  cur=$(phoenix_current_release)
-  latest=$(phoenix_latest_release_local)
-
-  if [[ -z "$latest" ]]; then
-    printf "%s%s no releases tagged on %s yet.%s\n" "$DIM" "·" "$remote" "$R"
-    printf "  %sTip:%s tag a release with: git -C $REPO tag v0.1.0 && git push $remote v0.1.0\n" "$DIM" "$R"
+  if [[ -z "$cur" ]]; then
+    printf "%s▲%s no installed version recorded — latest is %s%s%s\n" \
+      "$YEL" "$R" "$SEA$B" "$latest" "$R"
+    printf "\n  Run %sphoenix-term update%s to install %s.\n" "$SEA" "$R" "$latest"
     return 0
   fi
-
   if [[ "$cur" == "$latest" ]]; then
     printf "%s✓%s on the latest release: %s%s%s\n" "$GRN" "$R" "$SEA$B" "$latest" "$R"
     return 0
   fi
-
-  if [[ -z "$cur" ]]; then
-    printf "%s▲%s no release pinned locally — latest is %s%s%s\n" "$YEL" "$R" "$SEA$B" "$latest" "$R"
-  else
-    printf "%s▲%s update available: %s%s%s → %s%s%s\n" \
-      "$YEL" "$R" "$DIM" "$cur" "$R" "$SEA$B" "$latest" "$R"
-  fi
-
-  # Show release annotation if available.
-  local notes; notes=$(git_in_repo tag -l --format='%(contents:subject)' "$latest" 2>/dev/null)
-  [[ -n "$notes" ]] && printf "  %s%s%s\n" "$DIM" "$notes" "$R"
-
-  printf "\n  Run %sphoenix-term update%s to fast-forward to %s.\n" "$SEA" "$R" "$latest"
+  printf "%s▲%s update available: %s%s%s → %s%s%s\n" \
+    "$YEL" "$R" "$DIM" "$cur" "$R" "$SEA$B" "$latest" "$R"
+  printf "\n  Run %sphoenix-term update%s to upgrade to %s.\n" "$SEA" "$R" "$latest"
 }
 
 do_update() {
-  require_git_repo
-  if ! git_in_repo diff --quiet || ! git_in_repo diff --cached --quiet; then
-    warn "uncommitted changes in $REPO — commit or stash before --update"
-    git_in_repo status --short
-    exit 1
-  fi
-  local remote; remote=$(phoenix_origin_remote)
-  if [[ -z "$remote" ]]; then
-    warn "no remote configured — add one with: git -C $REPO remote add origin <url>"
+  # Refuse on dev clones — git checkouts are the user's working tree, not
+  # something we want to clobber with a tarball.
+  if [[ -d "$REPO/.git" ]]; then
+    warn "$REPO is a git clone — use 'git pull' here, not 'phoenix-term update'"
+    warn "the release-based updater is for installs made via bootstrap.sh"
     exit 1
   fi
 
-  say "fetching releases from $remote"
-  phoenix_fetch_releases || exit 1
+  say "checking latest release on $PHOENIX_GH_REPO"
+  local latest cur
+  latest=$(phoenix_fetch_latest_release) \
+    || { warn "could not resolve latest release — network down?"; exit 1; }
+  cur=$(phoenix_current_version)
 
-  local cur latest
-  cur=$(phoenix_current_release)
-  latest=$(phoenix_latest_release_local)
-
-  if [[ -z "$latest" ]]; then
-    warn "no releases tagged on $remote yet — nothing to update to"
-    exit 1
-  fi
-  if [[ "$cur" == "$latest" ]]; then
+  if [[ -n "$cur" && "$cur" == "$latest" ]]; then
     say "already on the latest release: $latest"
     return 0
   fi
 
-  # Refuse to move backwards: if the latest release is an ancestor of HEAD,
-  # the user is ahead of the published release (probably mid-development).
-  if git_in_repo merge-base --is-ancestor "$latest" HEAD 2>/dev/null; then
-    warn "HEAD is already past $latest (you're ahead of the released version) — not moving"
-    exit 1
-  fi
-  # Refuse non-fast-forward updates (local divergence from release line).
-  if ! git_in_repo merge-base --is-ancestor HEAD "$latest" 2>/dev/null; then
-    warn "your branch has diverged from $latest — fast-forward not possible"
-    warn "resolve manually: git -C $REPO log --oneline ${cur:-HEAD}..$latest"
-    exit 1
-  fi
-
-  say "fast-forwarding ${cur:-HEAD} → $latest"
-  run git_in_repo merge --ff-only "$latest"
-
+  local url="https://github.com/$PHOENIX_GH_REPO/archive/refs/tags/$latest.tar.gz"
+  say "downloading $latest"
   if (( DRY_RUN )); then
-    dry "would re-exec install.sh to apply any new symlinks"
+    dry "curl $url, extract, replace $REPO, re-exec install.sh"
     return 0
   fi
+
+  local tmp src_dir
+  tmp=$(mktemp -d)
+  # shellcheck disable=SC2064
+  trap "rm -rf '$tmp'" RETURN
+
+  curl -fsSL --retry 3 --connect-timeout 10 "$url" -o "$tmp/phoenix.tar.gz" \
+    || { warn "download failed: $url"; exit 1; }
+  tar -C "$tmp" -xzf "$tmp/phoenix.tar.gz"
+  src_dir=$(find "$tmp" -mindepth 1 -maxdepth 1 -type d | head -1)
+  [[ -d "$src_dir" ]] || { warn "extraction failed"; exit 1; }
+
+  local bak="$REPO.bak-$(date +%Y%m%d%H%M%S)"
+  say "moving $REPO → $bak"
+  mv "$REPO" "$bak"
+  mv "$src_dir" "$REPO"
+  echo "$latest" > "$REPO/.version"
+
+  # User settings (~/.config/phoenix-term/config.zsh) live outside $REPO, so
+  # the swap above can't have touched them. Surface this so the user knows
+  # their preferences carried over.
+  if [[ -f "$HOME/.config/phoenix-term/config.zsh" ]]; then
+    say "user settings preserved → $HOME/.config/phoenix-term/config.zsh"
+  fi
+
   say "re-running install.sh from $latest"
+  exec bash "$REPO/install.sh"
+}
+
+# ---------- backups / revert ----------
+#
+# Every `--update` rotates the prior install dir to `$REPO.bak-<timestamp>`
+# before extracting the new release. Those backups never get pruned
+# automatically — `--revert` rolls back to the most recent one (and rotates
+# the *current* install to a new backup at the same time, so a revert is
+# itself revertable). `--backups` lists what's available.
+
+# Emit one "path|version|human-date" line per backup, newest first.
+phoenix_list_backups() {
+  local dir version ts human
+  # `ls -1dt` sorts directories by mtime descending; works on macOS + Linux.
+  for dir in $(ls -1dt "$REPO".bak-* 2>/dev/null); do
+    [[ -d "$dir" ]] || continue
+    version="(unknown)"
+    if [[ -f "$dir/.version" ]]; then
+      version=$(head -1 "$dir/.version" 2>/dev/null | tr -d '[:space:]')
+      [[ -z "$version" ]] && version="(unknown)"
+    fi
+    # Parse the timestamp suffix back into YYYY-MM-DD HH:MM:SS for display.
+    ts="${dir##*.bak-}"
+    if [[ ${#ts} -eq 14 ]]; then
+      human="${ts:0:4}-${ts:4:2}-${ts:6:2} ${ts:8:2}:${ts:10:2}:${ts:12:2}"
+    else
+      human="$ts"
+    fi
+    printf "%s|%s|%s\n" "$dir" "$version" "$human"
+  done
+}
+
+do_backups() {
+  printf "%sPhoenix Term — backups%s  %s($REPO.bak-*)%s\n\n" \
+    "$SEA" "$R" "$DIM" "$R"
+  local entries
+  entries=$(phoenix_list_backups)
+  if [[ -z "$entries" ]]; then
+    printf "  %sno backups yet — they're created automatically by%s %sphoenix-term update%s.\n" \
+      "$DIM" "$R" "$SEA" "$R"
+    return 0
+  fi
+  printf "  %-4s  %-14s  %-19s  %s\n" "#" "VERSION" "DATE" "PATH"
+  printf "  %s%s%s\n" "$DIM" "────  ──────────────  ───────────────────  ────" "$R"
+  local i=1 path version date_iso
+  while IFS='|' read -r path version date_iso; do
+    printf "  %s%-4d%s  %s%-14s%s  %s  %s\n" \
+      "$SEA" "$i" "$R" "$SEA$B" "$version" "$R" "$date_iso" "${path/#$HOME/~}"
+    i=$((i+1))
+  done <<< "$entries"
+  printf "\n  Roll back to the most recent: %sphoenix-term revert%s\n" "$SEA" "$R"
+}
+
+do_revert() {
+  if [[ -d "$REPO/.git" ]]; then
+    warn "$REPO is a git clone — use git commands here, not 'phoenix-term revert'"
+    warn "(the revert flow is for release-tarball installs made via bootstrap.sh)"
+    exit 1
+  fi
+
+  local target
+  target=$(phoenix_list_backups | head -1 | cut -d'|' -f1)
+  if [[ -z "$target" ]]; then
+    warn "no backups found at $REPO.bak-*"
+    warn "backups are created automatically by 'phoenix-term update' — there's nothing to roll back to."
+    exit 1
+  fi
+
+  local target_version="(unknown)" cur_version="(unknown)"
+  [[ -f "$target/.version" ]] && target_version=$(head -1 "$target/.version" 2>/dev/null | tr -d '[:space:]')
+  [[ -f "$REPO/.version"   ]] && cur_version=$(head -1 "$REPO/.version"   2>/dev/null | tr -d '[:space:]')
+
+  printf "\n%sPhoenix Term — revert%s\n" "$SEA" "$R"
+  printf "  %sfrom:%s  %s%s%s  (%s)\n"  "$DIM" "$R" "$SEA$B" "$cur_version"    "$R" "$REPO"
+  printf "  %sto:%s    %s%s%s  (%s)\n\n" "$DIM" "$R" "$SEA$B" "$target_version" "$R" "$target"
+
+  if (( DRY_RUN )); then
+    dry "rotate $REPO → new .bak-<ts>, move $target into place, re-exec install.sh"
+    return 0
+  fi
+
+  # Rotate current aside (revert is itself revertable — calling revert again
+  # would now restore this snapshot).
+  local rolled="$REPO.bak-$(date +%Y%m%d%H%M%S)"
+  mv "$REPO" "$rolled"
+  say "rotated current install → $rolled"
+  mv "$target" "$REPO"
+  say "restored $target → $REPO"
+
+  # User settings live outside $REPO — they're untouched by this rotation.
+  if [[ -f "$HOME/.config/phoenix-term/config.zsh" ]]; then
+    say "user settings preserved → $HOME/.config/phoenix-term/config.zsh"
+  fi
+
+  say "re-running install.sh to refresh symlinks against $target_version"
   exec bash "$REPO/install.sh"
 }
 
@@ -792,6 +1502,10 @@ settings_apply_bg_mode() {
 }
 
 settings_ensure() {
+  # CONTRACT: this function MUST NOT overwrite an existing config file —
+  # user settings are preserved across every install, update, and revert.
+  # The early-return below is the load-bearing line for that guarantee;
+  # don't add an "upgrade" branch that rewrites the file in place.
   if [[ -f "$PHOENIX_CFG_FILE" ]]; then return 0; fi
   run mkdir -p "$PHOENIX_CFG_DIR"
   if (( DRY_RUN )); then dry "write default config to $PHOENIX_CFG_FILE"; return; fi
@@ -971,5 +1685,7 @@ case "$MODE" in
   version)   do_version ;;
   uninstall) do_uninstall ;;
   doctor)    do_doctor ;;
+  revert)    do_revert ;;
+  backups)   do_backups ;;
   settings)  do_settings ;;
 esac

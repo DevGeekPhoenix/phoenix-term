@@ -7,8 +7,20 @@
 # PHOENIX_* env vars are visible to every check below.
 [ -f "$HOME/.config/phoenix-term/config.zsh" ] && source "$HOME/.config/phoenix-term/config.zsh"
 
-# Homebrew env (Apple Silicon)
-[ -x /opt/homebrew/bin/brew ] && eval "$(/opt/homebrew/bin/brew shellenv)"
+# Homebrew env — Apple Silicon (/opt/homebrew), Intel Mac (/usr/local), or
+# Linuxbrew if the user happens to have it. On Debian/Ubuntu without brew,
+# every brew check is silently skipped and apt-installed tools take over.
+for __brew in /opt/homebrew/bin/brew /usr/local/bin/brew /home/linuxbrew/.linuxbrew/bin/brew; do
+  [ -x "$__brew" ] && eval "$($__brew shellenv)" && break
+done
+unset __brew
+
+# Pick up user-local binaries (apt installs symlinked into ~/.local/bin on
+# Linux, plus anything the user drops there).
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *) export PATH="$HOME/.local/bin:$PATH" ;;
+esac
 
 # ── Starship prompt ─────────────────────────────────────────
 command -v starship >/dev/null && eval "$(starship init zsh)"
@@ -84,16 +96,29 @@ alias tl='tmux ls'
 alias tk='tmux kill-session -t'
 
 # ── zsh-autosuggestions (fish-like ghost text) ─────────────
-# Subtle gray so the ghost suggestion blends with the dark Warp bg
-# but is still legible — matches Warp's own dim suggestion style.
-[ -f /opt/homebrew/share/zsh-autosuggestions/zsh-autosuggestions.zsh ] && \
-  source /opt/homebrew/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+# Subtle gray so the ghost suggestion blends with the dark bg but is
+# still legible. Search the usual install paths for Homebrew (macOS) +
+# apt (Debian/Ubuntu) — first hit wins.
+for __as in \
+  /opt/homebrew/share/zsh-autosuggestions/zsh-autosuggestions.zsh \
+  /usr/local/share/zsh-autosuggestions/zsh-autosuggestions.zsh \
+  /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh; do
+  [ -f "$__as" ] && source "$__as" && break
+done
+unset __as
 ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=#5a5a5a'
 ZSH_AUTOSUGGEST_STRATEGY=(history completion)
 
 # ── fast-syntax-highlighting (MUST be sourced last) ────────
-FSH_PLUGIN=/opt/homebrew/opt/zsh-fast-syntax-highlighting/share/zsh-fast-syntax-highlighting/fast-syntax-highlighting.plugin.zsh
-[ -f "$FSH_PLUGIN" ] && source "$FSH_PLUGIN"
+# Brew installs to /opt/homebrew/opt/...; on Linux install.sh clones to
+# ~/.zsh/plugins/fast-syntax-highlighting (no apt package).
+for __fsh in \
+  /opt/homebrew/opt/zsh-fast-syntax-highlighting/share/zsh-fast-syntax-highlighting/fast-syntax-highlighting.plugin.zsh \
+  /usr/local/opt/zsh-fast-syntax-highlighting/share/zsh-fast-syntax-highlighting/fast-syntax-highlighting.plugin.zsh \
+  "$HOME/.zsh/plugins/fast-syntax-highlighting/fast-syntax-highlighting.plugin.zsh"; do
+  [ -f "$__fsh" ] && source "$__fsh" && break
+done
+unset __fsh
 
 # ─────────────────────────────────────────────────────────────
 #  Auto-tmux: every new interactive shell drops into a fresh
@@ -145,19 +170,21 @@ phoenix-welcome() {
 }
 
 # ─────────────────────────────────────────────────────────────
-#  Release-update check — at most once per day, fetched in the
-#  background. Compares the closest tag reachable from HEAD
-#  against the highest semver tag on origin. Notifies only on
-#  tagged releases.
+#  Release-update check — at most once per day. Resolves the
+#  latest GitHub Release via the /releases/latest redirect (no
+#  API auth needed, not subject to the 60-req/hr rate limit),
+#  fires curl in the background so it never blocks the prompt,
+#  and compares against the installed version stored in
+#  $repo/.version (written by bootstrap.sh / install.sh).
 # ─────────────────────────────────────────────────────────────
 __phoenix_update_check() {
   local repo="${PHOENIX_REPO:-${${(%):-%x}:A:h:h}}"
-  [[ -d "$repo/.git" ]] || return
-  command git -C "$repo" rev-parse HEAD >/dev/null 2>&1 || return
-  command git -C "$repo" remote | read -r _ 2>/dev/null || return
+  local gh="${PHOENIX_GH_REPO:-DevGeekPhoenix/phoenix-term}"
+  command -v curl >/dev/null 2>&1 || return
 
   local cache="$HOME/.cache/phoenix-term"
   local stamp="$cache/last-check"
+  local latest_cache="$cache/latest-release"
   local now=$(date +%s)
   local last=0
   [[ -f "$stamp" ]] && last=$(cat "$stamp" 2>/dev/null || echo 0)
@@ -165,15 +192,31 @@ __phoenix_update_check() {
   if (( now - last > 86400 )); then
     mkdir -p "$cache"
     echo "$now" > "$stamp"
-    ( command git -C "$repo" fetch --quiet --tags --prune origin >/dev/null 2>&1 & disown ) 2>/dev/null
+    # Background: follow the /releases/latest redirect, parse the tag out
+    # of the resolved URL, drop into the cache file. Non-blocking.
+    {
+      local resolved tag
+      resolved=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+        "https://github.com/$gh/releases/latest" 2>/dev/null)
+      tag="${resolved##*/tag/}"
+      [[ -n "$tag" && "$tag" != "$resolved" ]] && printf '%s\n' "$tag" > "$latest_cache"
+    } &!
+    return
   fi
 
-  local current latest
-  current=$(command git -C "$repo" describe --tags --abbrev=0 HEAD 2>/dev/null)
-  latest=$(command git -C "$repo" tag --list 'v*' --sort=-v:refname 2>/dev/null | head -1)
+  [[ -f "$latest_cache" ]] || return
+  local latest current
+  latest=$(<"$latest_cache")
+  latest="${latest//[[:space:]]/}"
   [[ -z "$latest" ]] && return
+
+  if [[ -f "$repo/.version" ]]; then
+    current=$(<"$repo/.version")
+    current="${current//[[:space:]]/}"
+  elif [[ -d "$repo/.git" ]]; then
+    current=$(command git -C "$repo" describe --tags --abbrev=0 HEAD 2>/dev/null)
+  fi
   [[ "$current" == "$latest" ]] && return
-  command git -C "$repo" merge-base --is-ancestor "$latest" HEAD 2>/dev/null && return
 
   local yel=$'\e[38;2;250;189;47m' dim=$'\e[38;2;120;120;120m' sea=$'\e[38;2;32;178;170m' r=$'\e[0m'
   if [[ -n "$current" ]]; then

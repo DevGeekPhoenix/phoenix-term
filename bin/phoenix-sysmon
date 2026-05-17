@@ -3,8 +3,11 @@
 # No Nerd Font dependencies — uses only widely-supported Unicode so it
 # renders identically in any monospaced font. Themed in LightSeaGreen.
 
-import os, re, sys, time, signal, subprocess, shutil
+import glob, os, re, sys, time, signal, subprocess, shutil
 from collections import deque
+
+IS_MACOS = sys.platform == "darwin"
+IS_LINUX = sys.platform.startswith("linux")
 
 # Load PHOENIX_* preferences from ~/.config/phoenix-term/config.zsh so the
 # sidebar respects `phoenix-term settings` without needing the env exported
@@ -81,13 +84,40 @@ def sh(cmd):
     except Exception:
         return ""
 
-# ── Metric collectors (macOS) ──────────────────────────────────
-def cpu_pct():
+# ── Metric collectors ─────────────────────────────────────────
+# Each metric branches on platform. macOS shell-outs to BSD tools; Linux
+# reads /proc and /sys directly (faster, no fork). Both keep the same
+# return signatures so the draw() code below is platform-agnostic.
+
+# CPU — macOS uses `top`; Linux diffs two /proc/stat snapshots.
+_PROC_STAT_PREV = {"t": 0.0, "idle": 0, "total": 0}
+
+def _cpu_pct_macos():
     out = sh("top -l 1 -n 0 | grep 'CPU usage'")
     m = re.search(r'([\d.]+)%\s+idle', out)
     return max(0.0, 100 - float(m.group(1))) if m else 0.0
 
-def mem_info():
+def _cpu_pct_linux():
+    try:
+        with open("/proc/stat") as f:
+            fields = f.readline().split()
+    except OSError:
+        return 0.0
+    # cpu  user nice system idle iowait irq softirq steal guest guest_nice
+    vals = [int(x) for x in fields[1:]]
+    idle = vals[3] + (vals[4] if len(vals) > 4 else 0)
+    total = sum(vals)
+    prev = _PROC_STAT_PREV
+    d_idle = idle - prev["idle"]
+    d_total = total - prev["total"]
+    prev["idle"], prev["total"] = idle, total
+    if d_total <= 0:
+        return 0.0
+    return max(0.0, min(100.0, (1.0 - d_idle / d_total) * 100.0))
+
+cpu_pct = _cpu_pct_macos if IS_MACOS else _cpu_pct_linux
+
+def _mem_info_macos():
     out = sh("vm_stat")
     if not out: return (0, 0, 0)
     page_size = 16384
@@ -107,10 +137,33 @@ def mem_info():
     if total == 0: return (0, 0, 0)
     return (used / 1024**3, total / 1024**3, used / total * 100)
 
-def disk_info():
+def _mem_info_linux():
+    info = {}
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                k, _, rest = line.partition(":")
+                parts = rest.split()
+                if parts:
+                    info[k.strip()] = int(parts[0]) * 1024  # kB → bytes
+    except OSError:
+        return (0, 0, 0)
+    total = info.get("MemTotal", 0)
+    # MemAvailable models "would-be-free under memory pressure" — the
+    # right number for a user-facing usage display. Fall back to a manual
+    # estimate on ancient kernels (<3.14) that don't expose it.
+    avail = info.get("MemAvailable",
+                     info.get("MemFree", 0) + info.get("Buffers", 0)
+                     + info.get("Cached", 0))
+    used = total - avail
+    if total == 0: return (0, 0, 0)
+    return (used / 1024**3, total / 1024**3, used / total * 100)
+
+mem_info = _mem_info_macos if IS_MACOS else _mem_info_linux
+
+def _disk_info_macos():
     # macOS APFS quirk: `df /` reports only the small read-only system
     # volume. The real user data lives at /System/Volumes/Data (Catalina+).
-    # Prefer that when it exists; fall back to / otherwise.
     target = "/System/Volumes/Data" if os.path.exists("/System/Volumes/Data") else "/"
     out = sh(f"df -k {target}").splitlines()
     if len(out) < 2: return (0, 0, 0, 0)
@@ -120,7 +173,20 @@ def disk_info():
     return (avail / 1024**2, total / 1024**2, used / total * 100 if total else 0,
             used / 1024**2)
 
-def net_bytes():
+def _disk_info_linux():
+    try:
+        s = os.statvfs("/")
+    except OSError:
+        return (0, 0, 0, 0)
+    total = s.f_blocks * s.f_frsize
+    avail = s.f_bavail * s.f_frsize
+    used  = (s.f_blocks - s.f_bfree) * s.f_frsize
+    if total == 0: return (0, 0, 0, 0)
+    return (avail / 1024**3, total / 1024**3, used / total * 100, used / 1024**3)
+
+disk_info = _disk_info_macos if IS_MACOS else _disk_info_linux
+
+def _net_bytes_macos():
     out = sh("netstat -ibn")
     in_total = out_total = 0
     seen = set()
@@ -136,13 +202,51 @@ def net_bytes():
         except ValueError: continue
     return (in_total, out_total)
 
-def battery_info():
+def _net_bytes_linux():
+    in_total = out_total = 0
+    try:
+        with open("/proc/net/dev") as f:
+            next(f); next(f)  # two header lines
+            for line in f:
+                name, _, rest = line.partition(":")
+                name = name.strip()
+                if name == "lo" or name.startswith(("docker", "veth", "br-")):
+                    continue
+                p = rest.split()
+                if len(p) >= 9:
+                    in_total  += int(p[0])
+                    out_total += int(p[8])
+    except OSError:
+        return (0, 0)
+    return (in_total, out_total)
+
+net_bytes = _net_bytes_macos if IS_MACOS else _net_bytes_linux
+
+def _battery_info_macos():
     out = sh("pmset -g batt")
     if not out: return (None, False)
     m = re.search(r'(\d+)%', out)
     pct = int(m.group(1)) if m else None
     charging = ('AC Power' in out) or ('charging' in out and 'discharging' not in out)
     return (pct, charging)
+
+def _battery_info_linux():
+    # /sys/class/power_supply/BAT* — capacity + status. Some desktops (no
+    # battery) have only AC adapters, in which case we return None.
+    bats = sorted(glob.glob("/sys/class/power_supply/BAT*"))
+    if not bats:
+        return (None, False)
+    try:
+        with open(os.path.join(bats[0], "capacity")) as f:
+            pct = int(f.read().strip())
+        with open(os.path.join(bats[0], "status")) as f:
+            status = f.read().strip()
+    except (OSError, ValueError):
+        return (None, False)
+    charging = status in ("Charging", "Full", "Not charging")
+    return (pct, charging)
+
+battery_info = _battery_info_macos if IS_MACOS else _battery_info_linux
 
 def uptime_str():
     out = sh("uptime").strip()
