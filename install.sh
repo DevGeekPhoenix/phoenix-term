@@ -706,6 +706,45 @@ install_nerd_font_linux() {
 # None of these is fatal because phoenix.zsh has `command -v` guards on
 # every alias they back, and the installer is fully idempotent — the user
 # can re-run `bash install.sh` to retry anything that didn't take.
+# Make zsh the user's login shell so every terminal (Ghostty, gnome-terminal,
+# tty, ssh, cron) launches zsh and sources phoenix.zsh. We previously relied
+# on Ghostty's `command = zsh -l` directive, but the .deb-installed Ghostty
+# 1.3.1 on Ubuntu silently drops that line — chsh is the durable fix and is
+# also strictly better UX (consistent shell everywhere, not just in Ghostty).
+ensure_zsh_login_shell_linux() {
+  local zsh_path
+  zsh_path=$(command -v zsh) || { warn "zsh not on PATH — skipping default-shell change"; return 0; }
+
+  # Read login shell from passwd, not $SHELL (which can lag behind chsh
+  # across already-running sessions).
+  local login_shell
+  login_shell=$(getent passwd "$USER" 2>/dev/null | cut -d: -f7)
+  if [[ "$login_shell" == "$zsh_path" || "$login_shell" == "/bin/zsh" || "$login_shell" == "/usr/bin/zsh" ]]; then
+    say "default shell is already zsh ($login_shell)"
+    return 0
+  fi
+
+  # chsh refuses shells absent from /etc/shells. apt's zsh package adds the
+  # entry on install, but be defensive (e.g. a hand-built zsh on PATH).
+  if [[ -f /etc/shells ]] && ! grep -qxF "$zsh_path" /etc/shells; then
+    say "registering $zsh_path in /etc/shells"
+    if (( DRY_RUN )); then
+      dry "echo $zsh_path | sudo tee -a /etc/shells"
+    else
+      echo "$zsh_path" | sudo_if_needed tee -a /etc/shells >/dev/null
+    fi
+  fi
+
+  say "setting default shell to zsh ($zsh_path)"
+  if (( DRY_RUN )); then dry "chsh -s $zsh_path $USER"; return 0; fi
+  if sudo_if_needed chsh -s "$zsh_path" "$USER" 2>/dev/null; then
+    ok_msg "default shell set to zsh — log out and back in (or reboot) to activate"
+    export PHOENIX_LOGIN_SHELL_CHANGED=1
+  else
+    warn "chsh failed — set the default shell manually:  chsh -s $zsh_path"
+  fi
+}
+
 install_linux_extras() {
   ( link_debian_renamed_binaries ) || warn "renaming bat/fd symlinks failed"
   ( install_starship_linux )       || warn "starship install failed — phoenix prompt won't show until installed"
@@ -719,6 +758,11 @@ install_linux_extras() {
   ( install_zsh_fsh_linux )        || warn "zsh-fast-syntax-highlighting clone failed — syntax highlighting off"
   ( install_ghostty_linux )        || warn "ghostty install failed — see message above"
   ( install_nerd_font_linux )      || warn "nerd font install failed — terminal will fall back to default font"
+  # Called without a subshell so PHOENIX_LOGIN_SHELL_CHANGED can propagate
+  # back to do_install for the post-install notice. The function has no
+  # set-e-sensitive operations, so the subshell-containment pattern used
+  # by the helpers above is unnecessary here.
+  ensure_zsh_login_shell_linux  || warn "couldn't set zsh as default shell — terminals may still launch bash"
 }
 
 backup_and_link() {
@@ -889,6 +933,10 @@ do_install() {
   settings_ensure
 
   print_banner
+  if [[ "${PHOENIX_LOGIN_SHELL_CHANGED:-0}" == "1" ]]; then
+    printf "\n  %s!%s Your default shell was changed to zsh. ${SEA}Log out and back in${R}\n" "$YEL" "$R"
+    printf "    (or reboot) for new terminal windows to pick it up.\n\n"
+  fi
 
   # Offer to customize, but only on a real TTY and only on first install.
   if (( config_was_fresh )) && [[ -t 0 ]] && ! (( DRY_RUN )); then
