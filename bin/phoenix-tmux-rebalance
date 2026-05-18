@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# phoenix-tmux-rebalance — fires from tmux's client-resized hook.
-# Pins banner-pane height and sysmon-pane width back to their configured
-# values so a terminal resize doesn't let tmux re-balance them.
+# Fired by tmux's client-resized hook — re-pins banner height + sysmon width.
 
 set -e
 [ -n "$TMUX" ] || exit 0
@@ -11,15 +9,12 @@ set -e
 NAME="${PHOENIX_NAME:-DEV PHOENIX}"
 SYSMON_WIDTH=36
 
-# Recompute banner height from the figlet text — same calc as phoenix-tmux-init
-# so the two stay in sync.
 BANNER_HEIGHT=$(figlet -f ANSI_Shadow -w 999 "$NAME" 2>/dev/null \
                 | sed '/^[[:space:]]*$/d' \
                 | wc -l \
                 | tr -d ' ')
 [ -z "$BANNER_HEIGHT" ] || [ "$BANNER_HEIGHT" -lt 1 ] 2>/dev/null && BANNER_HEIGHT=6
 
-# Re-pin across every session that has these panes.
 tmux list-panes -a -F '#{pane_id} #{pane_title}' 2>/dev/null \
   | while read -r pid title rest; do
       case "$title" in

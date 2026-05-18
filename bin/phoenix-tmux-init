@@ -1,16 +1,11 @@
 #!/usr/bin/env bash
-# phoenix-tmux-init — runs from tmux's session-created hook.
-# Spawns the sticky banner pane (if enabled) and the sysmon sidebar.
+# Spawned by tmux's session-created hook; sets up banner pane + sysmon sidebar.
 
 set -e
 [ -n "$TMUX" ] || exit 0
 
 [ -f "$HOME/.config/phoenix-term/config.zsh" ] && source "$HOME/.config/phoenix-term/config.zsh"
 
-# Apply mode-based styling so a fresh tmux server (or new session) picks
-# up the user's PHOENIX_BG_MODE without needing them to re-run settings.
-#   image → border has no bg (default), panes transparent
-#   color → border + panes painted with PHOENIX_BG_COLOR
 PHOENIX_BG_MODE_VAL="${PHOENIX_BG_MODE:-image}"
 PHOENIX_BG_COLOR_VAL="${PHOENIX_BG_COLOR:-#0c0f11}"
 if [ "$PHOENIX_BG_MODE_VAL" = "color" ]; then
@@ -21,9 +16,6 @@ else
   tmux set-option -g pane-active-border-style "fg=#1c2027" 2>/dev/null || true
 fi
 
-# Compute banner height from the actual figlet text rather than hardcoding,
-# so a custom PHOENIX_NAME / different font Just Works. Strips trailing
-# whitespace rows (figlet emits one). Fallback to 6 (ANSI_Shadow's height).
 NAME="${PHOENIX_NAME:-DEV PHOENIX}"
 BANNER_HEIGHT=$(figlet -f ANSI_Shadow -w 999 "$NAME" 2>/dev/null \
                 | sed '/^[[:space:]]*$/d' \
@@ -32,28 +24,22 @@ BANNER_HEIGHT=$(figlet -f ANSI_Shadow -w 999 "$NAME" 2>/dev/null \
 [ -z "$BANNER_HEIGHT" ] || [ "$BANNER_HEIGHT" -lt 1 ] 2>/dev/null && BANNER_HEIGHT=6
 SYSMON_WIDTH=36
 
-# Identify the main pane up front. On session-created there's exactly one
-# pane (the new session's shell), so capture its id BEFORE any splits.
-# After splits, "current active pane" can race with banner/sysmon's own
-# select-pane calls — explicit pane ids make the layout deterministic.
+# Capture the main pane id BEFORE any splits — after splits, "current active
+# pane" can race with banner/sysmon's own select-pane calls.
 main_pane=$(tmux list-panes -F '#{pane_id}' | head -1)
 
-# Paint the main pane's bg to match the mode. Banner/sysmon do their own
-# at spawn (via their bin scripts).
 if [ "$PHOENIX_BG_MODE_VAL" = "color" ]; then
   tmux select-pane -t "$main_pane" -P "bg=$PHOENIX_BG_COLOR_VAL" 2>/dev/null || true
 else
   tmux select-pane -t "$main_pane" -P 'bg=default' 2>/dev/null || true
 fi
 
-# Sticky banner: spawn a top pane above main. Skip if already present.
 case "${PHOENIX_BANNER_STICKY:-sticky}" in
   sticky)
     existing=$(tmux list-panes -F '#{pane_id} #{pane_title}' | awk '$2=="phoenix-banner"{print $1; exit}')
     if [ -z "$existing" ]; then
       tmux split-window -t "$main_pane" -v -b -l "$BANNER_HEIGHT" \
         "exec $HOME/.local/bin/phoenix-banner" 2>/dev/null || true
-      # The newly created pane is the one at top=0 (and isn't the main pane).
       banner_pane=$(tmux list-panes -F '#{pane_id} #{pane_top}' \
                     | awk -v m="$main_pane" '$1!=m && $2=="0"{print $1; exit}')
       [ -n "$banner_pane" ] && tmux select-pane -t "$banner_pane" -T phoenix-banner 2>/dev/null || true
@@ -61,17 +47,13 @@ case "${PHOENIX_BANNER_STICKY:-sticky}" in
     ;;
 esac
 
-# Sysmon sidebar — spawn only when absent. ALWAYS target the main pane
-# explicitly so we never accidentally split the banner pane.
 existing_sysmon=$(tmux list-panes -F '#{pane_id} #{pane_title}' | awk '$2=="phoenix-sysmon"{print $1; exit}')
 if [ -z "$existing_sysmon" ]; then
   tmux split-window -t "$main_pane" -h -l "$SYSMON_WIDTH" \
     "exec $HOME/.local/bin/phoenix-sysmon" 2>/dev/null || true
-  # The newly created pane is to the right of main_pane.
   sysmon_pane=$(tmux list-panes -F '#{pane_id} #{pane_left}' \
                 | awk '$2>0 && $2!="0"{print $1; exit}')
   [ -n "$sysmon_pane" ] && tmux select-pane -t "$sysmon_pane" -T phoenix-sysmon 2>/dev/null || true
 fi
 
-# Return focus to the main pane so the user's first prompt is there.
 tmux select-pane -t "$main_pane" 2>/dev/null || true

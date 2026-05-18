@@ -1,10 +1,4 @@
--- ─────────────────────────────────────────────────────────────
---  Phoenix Theme · Black & Gold — for Neovim
---  Palette and scope mappings ported from the canonical VS Code
---  source (BeardedBear/bearded-theme, dist/vscode/themes/
---  bearded-theme-black-&-gold.json) — built directly from the
---  TypeScript generator, not from the Zed port.
--- ─────────────────────────────────────────────────────────────
+-- Phoenix · Black & Gold — Neovim colorscheme.
 
 vim.cmd("hi clear")
 if vim.fn.exists("syntax_on") == 1 then vim.cmd("syntax reset") end
@@ -12,6 +6,7 @@ vim.opt.termguicolors = true
 vim.g.colors_name = "phoenix"
 
 -- ── Palette (canonical) ───────────────────────────────────────
+
 local p = {
   -- backgrounds
   bg          = "#111418",   -- editor.background
@@ -66,6 +61,7 @@ local p = {
 local function hi(g, s) vim.api.nvim_set_hl(0, g, s) end
 
 -- ── Core editor ───────────────────────────────────────────────
+
 hi("Normal",       { fg = p.fg, bg = p.bg })
 hi("NormalNC",     { fg = p.fg, bg = p.bg })
 hi("NormalFloat",  { fg = p.fg, bg = p.bg_elev })
@@ -127,6 +123,7 @@ hi("MsgArea",      { fg = p.fg, bg = p.bg })
 hi("MsgSeparator", { fg = p.border, bg = p.bg_elev })
 
 -- ── Legacy syntax (fallback for non-treesitter) ──────────────
+
 hi("Comment",      { fg = p.comment, italic = true })
 hi("Constant",     { fg = p.red })
 hi("String",       { fg = p.green })
@@ -172,6 +169,7 @@ hi("Error",        { fg = p.red, bold = true })
 hi("Todo",         { fg = p.gold, bg = p.bg_elev, bold = true })
 
 -- ── Diagnostics ───────────────────────────────────────────────
+
 hi("DiagnosticError",            { fg = p.red })
 hi("DiagnosticWarn",             { fg = p.orange })
 hi("DiagnosticInfo",             { fg = p.cyan })
@@ -191,6 +189,7 @@ hi("DiagnosticSignInfo",         { fg = p.cyan })
 hi("DiagnosticSignHint",         { fg = p.teal })
 
 -- ── Git / diff ────────────────────────────────────────────────
+
 hi("DiffAdd",      { bg = "#16261f" })  -- ~#00a8841a over bg
 hi("DiffChange",   { bg = "#16242a" })  -- ~#11b7d41a over bg
 hi("DiffDelete",   { fg = p.red, bg = "#2a1a17" })
@@ -213,6 +212,7 @@ hi("GitSignsChangeInline", { bg = "#16242a" })
 hi("GitSignsDeleteInline", { bg = "#2a1a17" })
 
 -- ── Treesitter (modern @captures) ─────────────────────────────
+
 hi("@comment",                  { link = "Comment" })
 hi("@comment.documentation",    { fg = p.comment, italic = true })
 hi("@comment.todo",             { fg = p.gold, bold = true })
@@ -368,6 +368,7 @@ hi("@lsp.mod.readonly",                     { fg = p.red })
 hi("@lsp.mod.static",                       { italic = true })
 
 -- ── cmp / blink completion ────────────────────────────────────
+
 hi("CmpItemAbbr",            { fg = p.fg })
 hi("CmpItemAbbrMatch",       { fg = p.gold, bold = true })
 hi("CmpItemAbbrMatchFuzzy",  { fg = p.gold, bold = true })
@@ -401,6 +402,7 @@ hi("BlinkCmpKindSnippet",          { fg = p.green })
 hi("BlinkCmpKindProperty",         { fg = p.orange })
 
 -- ── Telescope / Snacks picker ─────────────────────────────────
+
 hi("TelescopeNormal",         { fg = p.fg, bg = p.bg_panel })
 hi("TelescopeBorder",         { fg = p.bg_panel, bg = p.bg_panel })
 hi("TelescopePromptNormal",   { fg = p.fg, bg = p.bg_elev })
@@ -423,6 +425,7 @@ hi("SnacksDashboardKey",      { fg = p.cyan })
 hi("SnacksDashboardFooter",   { fg = p.fg_ui, italic = true })
 
 -- ── Neo-tree / Oil ────────────────────────────────────────────
+
 hi("NeoTreeNormal",           { fg = p.fg, bg = p.bg_panel })
 hi("NeoTreeNormalNC",         { fg = p.fg, bg = p.bg_panel })
 hi("NeoTreeRootName",         { fg = p.gold, bold = true })
@@ -447,6 +450,7 @@ hi("OilLink",                 { fg = p.cyan })
 hi("OilFile",                 { fg = p.fg })
 
 -- ── Indent guides ─────────────────────────────────────────────
+
 hi("IblIndent",          { fg = p.indent })
 hi("IblScope",           { fg = p.indent_act })
 hi("IblWhitespace",      { fg = p.indent })
@@ -454,6 +458,7 @@ hi("IndentBlanklineChar", { fg = p.indent })
 hi("IndentBlanklineContextChar", { fg = p.indent_act })
 
 -- ── which-key, notify, noice ──────────────────────────────────
+
 hi("WhichKey",            { fg = p.gold })
 hi("WhichKeyGroup",       { fg = p.cyan })
 hi("WhichKeyDesc",        { fg = p.fg })
@@ -472,8 +477,4 @@ hi("NoiceCmdline",          { fg = p.fg, bg = p.bg_elev })
 hi("NoiceCmdlinePopup",     { fg = p.fg, bg = p.bg_elev })
 hi("NoiceCmdlinePopupBorder", { fg = p.gold, bg = p.bg_elev })
 
--- ── Lualine theme (require'd via lua/lualine/themes/phoenix.lua) ──
--- That file is written out by the colorscheme plugin spec.
-
--- Expose palette so user plugins can re-use it
 vim.g.phoenix_palette = p

@@ -1,17 +1,5 @@
 #!/usr/bin/env bash
 # Phoenix Term — curl-pipe-bash installer.
-#
-#   curl -fsSL https://raw.githubusercontent.com/DevGeekPhoenix/phoenix-term/main/bootstrap.sh | bash
-#
-# Resolves the latest GitHub Release of DevGeekPhoenix/phoenix-term, downloads
-# its source tarball, extracts it to ~/.phoenix-term, then hands off to
-# install.sh. Re-runnable: replaces an existing install (with a timestamped
-# backup) so a piped `bash bootstrap.sh` always upgrades to the latest release.
-#
-# Overrides (set in env before running):
-#   PHOENIX_REPO         owner/repo  (default: DevGeekPhoenix/phoenix-term)
-#   PHOENIX_INSTALL_DIR  install path (default: ~/.phoenix-term)
-#   PHOENIX_TAG          install a specific release tag instead of latest
 
 set -euo pipefail
 
@@ -41,8 +29,7 @@ if [[ -n "$PIN_TAG" ]]; then
   TAG="$PIN_TAG"
   say "using pinned release: $TAG"
 else
-  # Resolve the latest release via the /releases/latest redirect. Works without
-  # GitHub API auth and isn't subject to the 60-req/hr unauth rate limit.
+  # /releases/latest redirect avoids GitHub API auth + the 60-req/hr unauth rate limit.
   say "resolving latest release"
   RESOLVED=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
     "https://github.com/$REPO/releases/latest" 2>/dev/null || true)

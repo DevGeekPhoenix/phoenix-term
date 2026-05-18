@@ -1,6 +1,3 @@
--- Lualine theme generated to match Phoenix · Black & Gold.
--- Picked up by lualine when configured with { options = { theme = 'phoenix' } }.
-
 local p = {
   bg          = "#111418",
   bg_panel    = "#0c0f11",

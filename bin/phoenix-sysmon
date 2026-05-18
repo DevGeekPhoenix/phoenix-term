@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-# Beautiful right-sidebar system monitor.
-# No Nerd Font dependencies — uses only widely-supported Unicode so it
-# renders identically in any monospaced font. Themed in LightSeaGreen.
+# Right-sidebar system monitor. Pure stdlib, no Nerd Font dependencies.
 
 import glob, os, re, sys, time, signal, subprocess, shutil
 from collections import deque
@@ -9,9 +7,6 @@ from collections import deque
 IS_MACOS = sys.platform == "darwin"
 IS_LINUX = sys.platform.startswith("linux")
 
-# Load PHOENIX_* preferences from ~/.config/phoenix-term/config.zsh so the
-# sidebar respects `phoenix-term settings` without needing the env exported
-# into tmux's environment.
 _cfg = os.path.expanduser("~/.config/phoenix-term/config.zsh")
 if os.path.exists(_cfg):
     _line_re = re.compile(r'^\s*export\s+([A-Z_][A-Z0-9_]*)=(.*)$')
@@ -29,10 +24,6 @@ if os.path.exists(_cfg):
 
 PHOENIX_NAME = os.environ.get("PHOENIX_NAME", "DEV PHOENIX")
 
-# Set this pane's bg based on the user's mode, and disable input so the
-# sysmon sidebar can never be typed into or selected via prefix+navigation.
-#   image  → bg=default (transparent, wallpaper shows through)
-#   color  → bg=<PHOENIX_BG_COLOR> (explicit color, image hidden)
 def _apply_pane_bg():
     pane = os.environ.get("TMUX_PANE", "")
     if not pane:
@@ -41,7 +32,7 @@ def _apply_pane_bg():
     color = os.environ.get("PHOENIX_BG_COLOR", "#0c0f11")
     style = f"bg={color}" if mode == "color" else "bg=default"
     for args in (["select-pane", "-t", pane, "-P", style],
-                 ["select-pane", "-t", pane, "-d"]):  # -d disables input
+                 ["select-pane", "-t", pane, "-d"]):
         try:
             subprocess.run(["tmux"] + args,
                            check=False,
@@ -54,11 +45,12 @@ def _apply_pane_bg():
 _apply_pane_bg()
 
 # ── Palette ────────────────────────────────────────────────────
-SEA    = "\033[38;2;32;178;170m"     # #20b2aa  primary
-TEAL   = "\033[38;2;94;234;212m"     # #5eead4  highlight
+
+SEA    = "\033[38;2;32;178;170m"
+TEAL   = "\033[38;2;94;234;212m"
 PINK   = "\033[38;2;244;114;182m"
 MUTED  = "\033[38;2;140;140;140m"
-DIM    = "\033[38;2;68;68;68m"       # empty bar fill
+DIM    = "\033[38;2;68;68;68m"
 FG     = "\033[38;2;230;230;230m"
 RED    = "\033[38;2;251;73;52m"
 YEL    = "\033[38;2;250;189;47m"
@@ -67,6 +59,7 @@ B      = "\033[1m"
 R      = "\033[0m"
 
 # ── Layout ─────────────────────────────────────────────────────
+
 def pane_width():
     try: return max(28, shutil.get_terminal_size((34, 24)).columns)
     except Exception: return 34
@@ -76,6 +69,7 @@ def pane_height():
     except Exception: return 24
 
 # ── Shell helper ───────────────────────────────────────────────
+
 def sh(cmd):
     try:
         return subprocess.check_output(
@@ -85,11 +79,7 @@ def sh(cmd):
         return ""
 
 # ── Metric collectors ─────────────────────────────────────────
-# Each metric branches on platform. macOS shell-outs to BSD tools; Linux
-# reads /proc and /sys directly (faster, no fork). Both keep the same
-# return signatures so the draw() code below is platform-agnostic.
 
-# CPU — macOS uses `top`; Linux diffs two /proc/stat snapshots.
 _PROC_STAT_PREV = {"t": 0.0, "idle": 0, "total": 0}
 
 def _cpu_pct_macos():
@@ -103,7 +93,6 @@ def _cpu_pct_linux():
             fields = f.readline().split()
     except OSError:
         return 0.0
-    # cpu  user nice system idle iowait irq softirq steal guest guest_nice
     vals = [int(x) for x in fields[1:]]
     idle = vals[3] + (vals[4] if len(vals) > 4 else 0)
     total = sum(vals)
@@ -145,13 +134,12 @@ def _mem_info_linux():
                 k, _, rest = line.partition(":")
                 parts = rest.split()
                 if parts:
-                    info[k.strip()] = int(parts[0]) * 1024  # kB → bytes
+                    info[k.strip()] = int(parts[0]) * 1024
     except OSError:
         return (0, 0, 0)
     total = info.get("MemTotal", 0)
-    # MemAvailable models "would-be-free under memory pressure" — the
-    # right number for a user-facing usage display. Fall back to a manual
-    # estimate on ancient kernels (<3.14) that don't expose it.
+    # MemAvailable models "would-be-free under memory pressure" — right for a
+    # user-facing usage display. Fall back manually on kernels <3.14.
     avail = info.get("MemAvailable",
                      info.get("MemFree", 0) + info.get("Buffers", 0)
                      + info.get("Cached", 0))
@@ -162,8 +150,8 @@ def _mem_info_linux():
 mem_info = _mem_info_macos if IS_MACOS else _mem_info_linux
 
 def _disk_info_macos():
-    # macOS APFS quirk: `df /` reports only the small read-only system
-    # volume. The real user data lives at /System/Volumes/Data (Catalina+).
+    # APFS quirk: `df /` reports only the small read-only system volume on
+    # Catalina+. Real user data lives at /System/Volumes/Data.
     target = "/System/Volumes/Data" if os.path.exists("/System/Volumes/Data") else "/"
     out = sh(f"df -k {target}").splitlines()
     if len(out) < 2: return (0, 0, 0, 0)
@@ -206,7 +194,7 @@ def _net_bytes_linux():
     in_total = out_total = 0
     try:
         with open("/proc/net/dev") as f:
-            next(f); next(f)  # two header lines
+            next(f); next(f)
             for line in f:
                 name, _, rest = line.partition(":")
                 name = name.strip()
@@ -231,8 +219,6 @@ def _battery_info_macos():
     return (pct, charging)
 
 def _battery_info_linux():
-    # /sys/class/power_supply/BAT* — capacity + status. Some desktops (no
-    # battery) have only AC adapters, in which case we return None.
     bats = sorted(glob.glob("/sys/class/power_supply/BAT*"))
     if not bats:
         return (None, False)
@@ -260,10 +246,8 @@ def loadavg():
 def hostname_short():
     return sh("hostname -s").strip() or "host"
 
-# ── Clock (block digits, 4w × 5h, 7-segment "Digital Numbers" style) ─
-# Each digit is a 4-col × 5-row block-art glyph using full-blocks for
-# the segments. Solid horizontal/vertical bars mimic Digital Numbers'
-# chunky LED look. Adjacent chars get a 1-col gap so they don't merge.
+# 4w × 5h block-art glyphs. tmux strips DEC double-height escapes across panes
+# so a hand-rolled font is the only way to get chunky digits in the sidebar.
 DIGITS = {
     '0': ["████", "█  █", "█  █", "█  █", "████"],
     '1': ["   █", "   █", "   █", "   █", "   █"],
@@ -291,20 +275,15 @@ def clock_rows():
     return rows
 
 # ── Visual primitives ──────────────────────────────────────────
+
 EIGHTHS = "▁▂▃▄▅▆▇█"
 PARTIAL = "▏▎▍▌▋▊▉█"
 
-# Bold+italic → Ghostty renders this segment using font-family-bold-italic,
-# which is mapped to "Digital Numbers". Use for any numeric text we want
-# in the LED clock face.
 DN = "\033[1;3m"
 
 _DIGIT_RUN = re.compile(r'\d+(?:\.\d+)?')
 
 def digitize(s, base):
-    """Wrap each digit run in s with the DN font escape, restoring
-    `base` color/style codes after each match so non-digit chars keep
-    their original color."""
     return _DIGIT_RUN.sub(lambda m: f"{DN}{m.group()}{R}{base}", s)
 
 def color_for(pct, inverse=False):
@@ -345,9 +324,6 @@ def fmt_rate(bps):
 def strip_ansi(s): return re.sub(r'\x1b\[[0-9;]*m', '', s)
 def vlen(s): return len(strip_ansi(s))
 
-# ── Section header with left bracket  ╭  + label + dotted rule + value ─
-# Layout: " " + head + " " + dashes + " " + value     (3 literal spaces)
-# Layout: " " + head + " " + dashes                   (2 literal spaces, no value)
 def section_top(label, value, w, accent=SEA):
     head_text = f"╭─ {label}"
     head = f"{accent}{B}{head_text}{R}"
@@ -359,19 +335,15 @@ def section_top(label, value, w, accent=SEA):
     fill = max(1, w - 2 - len(head_text))
     return f" {head}{accent} {'─' * fill}{R}"
 
-# Continuation rows use a left │ accent, indenting content by 3.
 def cont(content, accent=SEA):
     return f" {accent}│{R}  {content}"
 
 def section_end(accent=SEA):
     return f" {accent}╰{R}"
 
-# ── Header ──
-# Order:  blank · TITLE · blank · CLOCK · blank · DATE · blank · rule
 def _center_pad(w, item_w):
-    # Round-to-nearest centering so an odd amount of spare space biases
-    # toward EQUAL on both sides (instead of always favouring the left
-    # padding via floor division).
+    # Round-to-nearest so an odd amount of spare space biases toward EQUAL
+    # padding (vs. floor division which always favours the left).
     if w <= item_w:
         return 0
     return round((w - item_w) / 2)
@@ -380,40 +352,36 @@ def header_block(w):
     rule = f"{SEA}{'━' * w}{R}"
     out = [""]
 
-    # Title at top — spaced letters of PHOENIX_NAME (e.g. "DEV PHOENIX"
-    # becomes "D E V   P H O E N I X").
     title_text = " ".join(PHOENIX_NAME.upper())
     title = f"{SEA}{B}{title_text}{R}"
     t_pad = _center_pad(w, len(title_text))
     out.append(f"{' ' * t_pad}{title}")
-    out.append("")  # padding between title and clock
+    out.append("")
 
-    # Clock — chunky multi-line block art.
     rows = clock_rows()
     cw = len(rows[0]) if rows else 0
     c_pad = _center_pad(w, cw)
     for row in rows:
         out.append(f"{' ' * c_pad}{SEA}{B}{row}{R}")
-    out.append("")  # padding between clock and date
+    out.append("")
 
-    # Date.
     date_text = time.strftime("%a  %d %b %Y")
     d_pad = _center_pad(w, len(date_text))
     out.append(f"{' ' * d_pad}{MUTED}{date_text}{R}")
-    out.append("")  # padding between date and rule
+    out.append("")
 
     out.append(rule)
     return out
 
 # ── Main draw ──────────────────────────────────────────────────
+
 class State:
     def __init__(self):
         self.cpu_hist     = deque(maxlen=28)
         self.net_in_hist  = deque(maxlen=24)
         self.net_out_hist = deque(maxlen=24)
         self.prev_bytes   = None
-        # Cached metrics — refreshed every METRIC_REFRESH_S, while the
-        # clock & redraw tick every 1s for a smooth seconds counter.
+        # Metrics cached for METRIC_REFRESH_S; the clock still ticks every 1s.
         self.metrics      = None
         self.last_refresh = 0.0
 
@@ -422,7 +390,7 @@ METRIC_REFRESH_S = 2.0
 def refresh_metrics(state):
     cpu = cpu_pct()
     mu, mt, mp = mem_info()
-    da, dt, dp, du = disk_info()   # available, total, used_pct, used
+    da, dt, dp, du = disk_info()
     in_b, out_b = net_bytes()
     bp, bc = battery_info()
     la = loadavg()
@@ -445,7 +413,7 @@ def refresh_metrics(state):
 def draw(state):
     w = pane_width()
     h = pane_height()
-    bar_w = w - 4   # content inside the │ accent indent
+    bar_w = w - 4
 
     now = time.time()
     if state.metrics is None or (now - state.last_refresh) >= METRIC_REFRESH_S:
@@ -456,15 +424,15 @@ def draw(state):
     in_rate, out_rate = m['in_rate'], m['out_rate']
     bp, bc, la = m['bp'], m['bc'], m['la']
 
-    # Clear once at the start; we'll place each row via absolute cursor
-    # positioning afterwards. \033[3J also wipes scrollback so the pane
-    # can never be scrolled up to reveal stale frames.
+    # \033[3J wipes scrollback so the pane can never scroll up to reveal
+    # stale frames.
     sys.stdout.write("\033[H\033[2J\033[3J")
     L = []
     L.extend(header_block(w))
     L.append("")
 
     # ── CPU ─────────────────────────────────────────────
+
     L.append(section_top("CPU",    f"{cpu:5.1f}%", w))
     L.append(cont(smooth_bar(cpu, bar_w)))
     L.append(cont(f"{TEAL}{sparkline(state.cpu_hist, bar_w, max_val=100)}{R}"))
@@ -474,6 +442,7 @@ def draw(state):
     L.append("")
 
     # ── Memory ──────────────────────────────────────────
+
     L.append(section_top("MEMORY", f"{mp:5.1f}%", w))
     L.append(cont(smooth_bar(mp, bar_w)))
     L.append(cont(f"{FG}{mu:.1f}{R} {MUTED}/{R} {FG}{mt:.1f} GB{R} {MUTED}used{R}"))
@@ -481,6 +450,7 @@ def draw(state):
     L.append("")
 
     # ── Disk ────────────────────────────────────────────
+
     L.append(section_top("DISK",   f"{dp:5.1f}%", w))
     L.append(cont(smooth_bar(dp, bar_w)))
     L.append(cont(f"{FG}{da:.0f}{R} {MUTED}/{R} {FG}{dt:.0f} GB{R} {MUTED}free{R}"))
@@ -488,6 +458,7 @@ def draw(state):
     L.append("")
 
     # ── Network ─────────────────────────────────────────
+
     L.append(section_top("NETWORK", "", w))
     max_rate = max(max(state.net_in_hist, default=1),
                    max(state.net_out_hist, default=1), 1024)
@@ -499,6 +470,7 @@ def draw(state):
     L.append("")
 
     # ── Battery ─────────────────────────────────────────
+
     if bp is not None:
         L.append(section_top("BATTERY", f"{bp:3d}%", w))
         L.append(cont(smooth_bar(bp, bar_w, inverse=True)))
@@ -509,10 +481,8 @@ def draw(state):
         L.append(section_end())
         L.append("")
 
-    # Write each row at an absolute position so the output never scrolls.
-    # If the dashboard is taller than the pane (small window), truncation
-    # at the bottom is fine — the header (name + clock) stays anchored at
-    # the top.
+    # Absolute cursor positioning so output never scrolls; truncation at the
+    # bottom keeps the header anchored when the pane is too short.
     for i, line in enumerate(L):
         if i >= h:
             break
@@ -520,6 +490,7 @@ def draw(state):
     sys.stdout.flush()
 
 # ── Entry point ────────────────────────────────────────────────
+
 def cleanup_exit(*_):
     sys.stdout.write("\033[?25h\n"); sys.stdout.flush()
     sys.exit(0)

@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# phoenix-term — everyday wrapper around the installer.
-# Resolves its own symlink target so it works no matter how it was invoked.
+# phoenix-term — everyday CLI wrapper around install.sh.
 
 set -e
 
@@ -33,7 +32,6 @@ case "$cmd" in
   backups|list-backups)   exec bash "$INSTALL" --backups "$@" ;;
   version|-V|--version)   exec bash "$INSTALL" --version ;;
   settings|config)
-    # No-arg "settings" drops into the interactive menu; pass through anything else.
     if [ $# -eq 0 ]; then
       exec bash "$INSTALL" --settings --menu
     else

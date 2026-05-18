@@ -1,12 +1,5 @@
 #!/usr/bin/env bash
-#
-# Phoenix Term installer.
-#   bash install.sh              # install (idempotent; backs up existing dotfiles)
-#   bash install.sh --uninstall  # remove symlinks, restore backups, strip zshrc source line
-#   bash install.sh --doctor     # check that an install is healthy
-#   bash install.sh --dry-run    # print every action without touching the filesystem
-#   bash install.sh --help
-#
+# Phoenix Term installer. Run `bash install.sh --help` for subcommands.
 
 set -euo pipefail
 
@@ -55,8 +48,8 @@ Flags:
 EOF
 }
 
-# Pre-parse: extract --settings <subcommand> [<key>] so subcommands aren't
-# treated as unknown top-level flags.
+# Pre-parse --settings <subcommand> [<key>] so they don't get caught by the
+# unknown-flag branch below.
 ARGS=()
 while (( $# )); do
   case "$1" in
@@ -64,7 +57,6 @@ while (( $# )); do
       MODE=settings
       if [[ -n "${2:-}" && "${2:0:1}" == "-" ]]; then
         SETTINGS_ARG="$2"; shift
-        # --get/--set take a KEY after the subcommand
         if [[ "$SETTINGS_ARG" == "--get" || "$SETTINGS_ARG" == "--set" ]]; then
           SETTINGS_KEY="${2:-}"; [[ -n "$SETTINGS_KEY" ]] && shift
         fi
@@ -100,12 +92,6 @@ run() {
 }
 
 # ---------- OS detection ----------
-#
-# PHOENIX_OS  ∈ { macos, debian }
-# PHOENIX_ARCH ∈ { x86_64, aarch64 }
-# Linux side covers Debian/Ubuntu and their derivatives (Mint, Pop!_OS, Kali,
-# elementary). Other distros are unsupported — we hard-fail rather than half-
-# install something broken.
 
 PHOENIX_OS=""
 PHOENIX_ARCH=""
@@ -144,9 +130,6 @@ detect_os() {
   esac
 }
 
-# Wrap any command that needs root with sudo on Linux. Avoids `sudo` calls on
-# macOS (where Homebrew refuses to run as root anyway) and on Linux when
-# already running as root.
 sudo_if_needed() {
   if [[ "$PHOENIX_OS" == "macos" ]] || [[ $EUID -eq 0 ]]; then
     run "$@"
@@ -156,18 +139,11 @@ sudo_if_needed() {
 }
 
 # ---------- Pre-flight checks ----------
-#
-# Run after detect_os, before anything touches the system. Each check prints
-# pass/fail and (on failure) a one-line "how to fix it." We fail fast at the
-# end if anything's red rather than getting half-installed and confusing.
-# Designed so the user sees a single actionable error message instead of a
-# mid-install curl/apt explosion.
 
 _pre_ok()  { printf "  %s✓%s %s\n" "$GRN" "$R" "$*"; }
 _pre_bad() { printf "  %s✗%s %s\n" "$RED" "$R" "$*"; }
 _pre_fix() { printf "      %s%s%s\n" "$DIM" "$*" "$R"; }
 
-# Generic: "is X on PATH"
 _pre_need_cmd() {
   local cmd="$1" mac_fix="$2" deb_fix="$3"
   if command -v "$cmd" >/dev/null 2>&1; then
@@ -203,9 +179,8 @@ _pre_github_reachable() {
   return 1
 }
 
-# Need ~1GB free for the brew/apt packages + LazyVim + nvim tarball + nerd font.
 _pre_disk_space() {
-  local avail_kb need_kb=1048576  # 1 GiB
+  local avail_kb need_kb=1048576
   avail_kb=$(df -k "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')
   avail_kb=${avail_kb:-0}
   local avail_mb=$((avail_kb/1024))
@@ -217,7 +192,6 @@ _pre_disk_space() {
   _pre_ok "disk space: ${avail_mb}MB free in $HOME"
 }
 
-# macOS-only
 _pre_not_root_macos() {
   if [[ $EUID -ne 0 ]]; then
     _pre_ok "running as user (not root) — Homebrew requires this"
@@ -228,7 +202,6 @@ _pre_not_root_macos() {
   return 1
 }
 
-# Linux-only
 _pre_sudo_linux() {
   if [[ $EUID -eq 0 ]]; then
     _pre_ok "running as root — sudo not required"
@@ -254,9 +227,8 @@ _pre_sudo_linux() {
 }
 
 _pre_apt_lock() {
-  # apt holds these locks during dpkg/apt-get runs; cloud-init / unattended-
-  # upgrades commonly grab them on fresh Ubuntu cloud images for 5-10 min
-  # after first boot.
+  # cloud-init / unattended-upgrades grab these locks on fresh Ubuntu cloud
+  # images for 5-10 min after first boot.
   local locks=(
     /var/lib/dpkg/lock-frontend
     /var/lib/dpkg/lock
@@ -286,8 +258,6 @@ preflight() {
 
   local fail=0
 
-  # curl + tar must already exist — bootstrap.sh and install.sh both use them
-  # before any package manager could install them.
   _pre_need_cmd curl \
     "/usr/bin/curl ships with macOS — your install is broken" \
     "sudo apt update && sudo apt install -y curl" || fail=1
@@ -302,8 +272,7 @@ preflight() {
   case "$PHOENIX_OS" in
     macos)
       _pre_not_root_macos || fail=1
-      # git on macOS comes via Xcode CLT, triggered by the Homebrew installer
-      # later in do_install — don't pre-flight it.
+      # git on macOS comes via Xcode CLT, triggered by the Homebrew installer.
       ;;
     debian)
       _pre_sudo_linux                                                                    || fail=1
@@ -345,15 +314,9 @@ BREW_FORMULAS=(
 )
 BREW_CASKS=(ghostty font-comic-shanns-mono-nerd-font)
 
-# Debian/Ubuntu — packages from apt. Several Phoenix tools aren't in apt
-# (starship, zoxide, eza, lazygit, atuin, yazi, neovim ≥ 0.9, ghostty,
-# zsh-fast-syntax-highlighting); those install via their official scripts or
-# GitHub releases in install_linux_extras().
-#
-# Anything in this list that isn't in the distro's apt index gets filtered
-# out before install (so Ubuntu 20.04 / Debian 11 — which don't package btop —
-# still install cleanly; phoenix.zsh has `command -v` guards on the affected
-# aliases so missing tools degrade silently).
+# Tools not in apt (starship, eza, lazygit, atuin, yazi, neovim ≥ 0.9,
+# ghostty, zsh-fast-syntax-highlighting) are fetched in install_linux_extras.
+# Packages here that don't exist on a given distro are filtered before install.
 APT_PACKAGES=(
   zsh tmux git curl wget ca-certificates
   figlet fzf ripgrep btop tldr
@@ -364,12 +327,9 @@ APT_PACKAGES=(
   bat fd-find
 )
 
-# Official neovim stable tarball — pinned to the "stable" tag so we always
-# get the latest release supported by LazyVim (≥ 0.9).
 NVIM_LINUX_TARBALL_URL_X86="https://github.com/neovim/neovim/releases/download/stable/nvim-linux-x86_64.tar.gz"
 NVIM_LINUX_TARBALL_URL_ARM="https://github.com/neovim/neovim/releases/download/stable/nvim-linux-arm64.tar.gz"
 
-# Comic Shanns Mono Nerd Font release zip.
 NERD_FONT_ZIP_URL="https://github.com/ryanoasis/nerd-fonts/releases/latest/download/ComicShannsMono.zip"
 
 SOURCE_LINE="source $REPO/shell/phoenix.zsh"
@@ -405,20 +365,10 @@ install_brew_packages() {
 }
 
 # ---------- Linux (Debian/Ubuntu) installers ----------
-#
-# Each helper is idempotent: it checks for the tool/file first and only
-# fetches when missing. Anything that touches /usr/local or /etc goes through
-# `sudo_if_needed`; user-owned paths (~/.local/bin, ~/.local/share, ~/.zsh)
-# don't.
 
 install_apt_packages() {
-  # Refresh package index once so apt-cache show + missing-package detection
-  # don't see a stale state.
   sudo_if_needed apt-get update -qq
 
-  # Filter to packages this distro actually carries — older Ubuntu/Debian
-  # don't have btop, for example. Anything filtered gets a one-line warning
-  # but doesn't abort the install.
   local available=() skipped=()
   for pkg in "${APT_PACKAGES[@]}"; do
     if apt-cache show "$pkg" >/dev/null 2>&1; then
@@ -443,8 +393,8 @@ install_apt_packages() {
   sudo_if_needed apt-get install -y "${missing[@]}"
 }
 
-# Debian ships `bat` as `batcat` and `fd` as `fdfind` to avoid name conflicts.
-# phoenix.zsh expects `bat` and `fd` — symlink them into ~/.local/bin.
+# Debian ships `bat` as `batcat` and `fd` as `fdfind` (name conflicts);
+# phoenix.zsh expects the upstream names.
 link_debian_renamed_binaries() {
   run mkdir -p "$HOME/.local/bin"
   if [[ -x /usr/bin/batcat && ! -e "$HOME/.local/bin/bat" ]]; then
@@ -505,10 +455,7 @@ install_gh_linux() {
   sudo_if_needed apt-get install -y gh
 }
 
-# Resolve the latest release tag for a GitHub repo. Uses the /releases/latest
-# redirect — same trick as bootstrap.sh — so we sidestep the 60-req/hr API
-# rate limit. Returns empty if no releases or network fails; callers fall
-# back to a pinned default tag.
+# /releases/latest redirect avoids the 60-req/hr unauth API rate limit.
 gh_latest_tag() {
   local repo="$1" resolved tag
   resolved=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
@@ -520,7 +467,6 @@ gh_latest_tag() {
 
 install_eza_linux() {
   command -v eza >/dev/null && return 0
-  # Ubuntu 24.04+ has eza in apt. Try that first; fall back to GitHub release.
   if apt-cache show eza >/dev/null 2>&1; then
     say "installing eza (apt)"
     sudo_if_needed apt-get install -y eza
@@ -583,10 +529,8 @@ install_yazi_linux() {
   rm -rf "$tmp"
 }
 
-# Apt's `neovim` is too old for LazyVim on most Debian/Ubuntu LTS releases
-# (LazyVim wants ≥ 0.9). Install the official stable tarball into /opt
-# instead, with a /usr/local/bin/nvim symlink. Re-runnable: replaces the
-# old install if `stable` has moved.
+# Apt's neovim is too old for LazyVim (wants ≥ 0.9). Use the upstream stable
+# tarball into /opt with a /usr/local/bin/nvim symlink.
 install_neovim_linux() {
   if command -v nvim >/dev/null; then
     local ver
@@ -620,8 +564,6 @@ install_neovim_linux() {
   rm -rf "$tmp"
 }
 
-# zsh-fast-syntax-highlighting isn't in apt. Clone into ~/.zsh/plugins
-# so phoenix.zsh can source it on Linux.
 install_zsh_fsh_linux() {
   local dst="$HOME/.zsh/plugins/fast-syntax-highlighting"
   [[ -d "$dst" ]] && return 0
@@ -629,16 +571,11 @@ install_zsh_fsh_linux() {
   run git clone --depth 1 https://github.com/zdharma-continuum/fast-syntax-highlighting "$dst"
 }
 
-# Ghostty doesn't have an official apt repo or universal .deb yet. We try
-# snap (community-published snap exists at snapcraft.io/ghostty) and fall
-# back to a clear manual-install pointer — phoenix works in any truecolor
-# terminal, so a missing Ghostty isn't a hard failure.
 install_ghostty_linux() {
-  # Snap → .deb fix-up: the Ghostty snap is sandboxed even when advertised
-  # as classic, which prevents `command = zsh -l` (in phoenix.config) from
-  # finding /usr/bin/zsh on the host. Result: Ghostty silently falls back
-  # to bash, phoenix.zsh never sources, no auto-tmux. The .deb path puts
-  # Ghostty in /usr/bin with full host access and resolves this.
+  # The Ghostty snap is sandboxed even when advertised as classic, which
+  # prevents `command = zsh -l` from finding /usr/bin/zsh on the host —
+  # Ghostty silently falls back to bash and phoenix.zsh never sources.
+  # The .deb route puts Ghostty in /usr/bin with full host access.
   if command -v ghostty >/dev/null; then
     local ghostty_path; ghostty_path=$(command -v ghostty)
     if [[ "$ghostty_path" == /snap/* ]]; then
@@ -654,10 +591,6 @@ install_ghostty_linux() {
   say "installing ghostty via mkasberg/ghostty-ubuntu (.deb)"
   if (( DRY_RUN )); then dry "run mkasberg/ghostty-ubuntu install.sh"; return 0; fi
 
-  # The mkasberg installer is the route Ghostty's own docs link to for
-  # Ubuntu/Debian. It detects distro+arch, fetches the right .deb from
-  # GitHub releases, and apt-installs it. Covers Ubuntu, Pop!_OS, Mint,
-  # Kali, Elementary, Zorin, KDE Neon, and Debian Trixie.
   if bash -c "$(curl -fsSL https://raw.githubusercontent.com/mkasberg/ghostty-ubuntu/HEAD/install.sh)"; then
     ok_msg "ghostty installed via .deb"
     return 0
@@ -681,7 +614,6 @@ install_ghostty_linux() {
   return 0
 }
 
-# Tiny helper for green confirmation lines, matching `ok` used in doctor.
 ok_msg() { printf "  %s✓%s %s\n" "$GRN" "$R" "$*"; }
 
 install_nerd_font_linux() {
@@ -700,23 +632,14 @@ install_nerd_font_linux() {
   command -v fc-cache >/dev/null && run fc-cache -f "$font_dir"
 }
 
-# Each helper runs in a subshell so `set -e` inside it stays armed (bash
-# disables errexit when a function is on the LHS of `||`, which would let
-# a mid-function curl failure cascade silently through later commands).
-# None of these is fatal because phoenix.zsh has `command -v` guards on
-# every alias they back, and the installer is fully idempotent — the user
-# can re-run `bash install.sh` to retry anything that didn't take.
-# Make zsh the user's login shell so every terminal (Ghostty, gnome-terminal,
-# tty, ssh, cron) launches zsh and sources phoenix.zsh. We previously relied
-# on Ghostty's `command = zsh -l` directive, but the .deb-installed Ghostty
-# 1.3.1 on Ubuntu silently drops that line — chsh is the durable fix and is
-# also strictly better UX (consistent shell everywhere, not just in Ghostty).
+# Without chsh: Ghostty's `command = zsh -l` *should* cover us, but the .deb
+# install of Ghostty 1.3.1 silently drops that directive — terminals fall
+# back to bash and phoenix.zsh never sources. chsh is the durable fix.
 ensure_zsh_login_shell_linux() {
   local zsh_path
   zsh_path=$(command -v zsh) || { warn "zsh not on PATH — skipping default-shell change"; return 0; }
 
-  # Read login shell from passwd, not $SHELL (which can lag behind chsh
-  # across already-running sessions).
+  # Read login shell from passwd, not $SHELL (lags chsh in already-running sessions).
   local login_shell
   login_shell=$(getent passwd "$USER" 2>/dev/null | cut -d: -f7)
   if [[ "$login_shell" == "$zsh_path" || "$login_shell" == "/bin/zsh" || "$login_shell" == "/usr/bin/zsh" ]]; then
@@ -724,8 +647,7 @@ ensure_zsh_login_shell_linux() {
     return 0
   fi
 
-  # chsh refuses shells absent from /etc/shells. apt's zsh package adds the
-  # entry on install, but be defensive (e.g. a hand-built zsh on PATH).
+  # chsh refuses shells absent from /etc/shells.
   if [[ -f /etc/shells ]] && ! grep -qxF "$zsh_path" /etc/shells; then
     say "registering $zsh_path in /etc/shells"
     if (( DRY_RUN )); then
@@ -745,6 +667,9 @@ ensure_zsh_login_shell_linux() {
   fi
 }
 
+# Each helper runs in a subshell so `set -e` stays armed inside it — bash
+# disables errexit when a function appears on the LHS of `||`, which would
+# otherwise let a mid-function curl failure cascade silently.
 install_linux_extras() {
   ( link_debian_renamed_binaries ) || warn "renaming bat/fd symlinks failed"
   ( install_starship_linux )       || warn "starship install failed — phoenix prompt won't show until installed"
@@ -758,10 +683,7 @@ install_linux_extras() {
   ( install_zsh_fsh_linux )        || warn "zsh-fast-syntax-highlighting clone failed — syntax highlighting off"
   ( install_ghostty_linux )        || warn "ghostty install failed — see message above"
   ( install_nerd_font_linux )      || warn "nerd font install failed — terminal will fall back to default font"
-  # Called without a subshell so PHOENIX_LOGIN_SHELL_CHANGED can propagate
-  # back to do_install for the post-install notice. The function has no
-  # set-e-sensitive operations, so the subshell-containment pattern used
-  # by the helpers above is unnecessary here.
+  # No subshell so PHOENIX_LOGIN_SHELL_CHANGED can propagate to do_install.
   ensure_zsh_login_shell_linux  || warn "couldn't set zsh as default shell — terminals may still launch bash"
 }
 
@@ -867,10 +789,9 @@ do_install() {
     run git clone --depth 1 https://github.com/tmux-plugins/tpm "$HOME/.tmux/plugins/tpm"
   fi
 
-  # LazyVim starter — only bootstrap when no nvim config exists. Phoenix's
-  # three nvim files get symlinked on top by the LINKS loop below. Must run
-  # BEFORE that loop: LazyVim clones into ~/.config/nvim and refuses if the
-  # dir is non-empty (a stray symlink from a previous run would block it).
+  # Must run BEFORE the LINKS loop: LazyVim clones into ~/.config/nvim and
+  # refuses if the dir is non-empty, which a stray symlink from a previous
+  # run would cause.
   if [[ ! -e "$HOME/.config/nvim/init.lua" ]]; then
     say "bootstrapping LazyVim starter into ~/.config/nvim"
     if (( DRY_RUN )); then
@@ -938,7 +859,6 @@ do_install() {
     printf "    (or reboot) for new terminal windows to pick it up.\n\n"
   fi
 
-  # Offer to customize, but only on a real TTY and only on first install.
   if (( config_was_fresh )) && [[ -t 0 ]] && ! (( DRY_RUN )); then
     printf "\n  Customize settings now? %s[y/N]%s " "$DIM" "$R"
     local answer; read -r answer || answer=""
@@ -1138,18 +1058,10 @@ do_doctor() {
 
 # ---------- version / check / update (GitHub Releases over HTTPS) ----------
 #
-# Updates key on GitHub *Releases*, not raw git tags.  Users get notified when
-# a new release is published on github.com/$PHOENIX_GH_REPO/releases.
-#
-# How "latest" is resolved:
-#   curl -I github.com/$repo/releases/latest  →  302 Location: .../tag/vX.Y.Z
-# The redirect resolves without API auth or the 60-req/hr unauthenticated
-# rate limit, so the daily check from every interactive shell stays cheap.
-#
-# Installed version is the contents of $REPO/.version (written by
-# bootstrap.sh on install and by do_update after each successful update).
-# Git clones used for development don't have it — do_version falls back to
-# `git describe` so dev workflows still print something sensible.
+# Updates track GitHub Releases (not git tags). /releases/latest redirect
+# avoids API auth + the 60-req/hr unauth rate limit. Installed version is
+# $REPO/.version (written by bootstrap.sh / do_update); dev clones fall
+# back to `git describe`.
 
 PHOENIX_GH_REPO="${PHOENIX_GH_REPO:-DevGeekPhoenix/phoenix-term}"
 UPDATE_STAMP="$HOME/.cache/phoenix-term/last-check"
@@ -1157,7 +1069,6 @@ LATEST_CACHE="$HOME/.cache/phoenix-term/latest-release"
 VERSION_FILE="$REPO/.version"
 
 phoenix_current_version() {
-  # The installed release tag. Empty if this is a dev clone with no .version.
   if [[ -f "$VERSION_FILE" ]]; then
     head -1 "$VERSION_FILE" | tr -d '[:space:]'
     return 0
@@ -1168,8 +1079,6 @@ phoenix_current_version() {
 }
 
 phoenix_fetch_latest_release() {
-  # Resolve the latest published Release via the /releases/latest redirect.
-  # On success, cache the tag and bump the freshness stamp.
   local resolved tag
   resolved=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
     "https://github.com/$PHOENIX_GH_REPO/releases/latest" 2>/dev/null || true)
@@ -1184,7 +1093,6 @@ phoenix_fetch_latest_release() {
 }
 
 phoenix_latest_release_cached() {
-  # Read the cached tag if it exists.
   [[ -f "$LATEST_CACHE" ]] && head -1 "$LATEST_CACHE" | tr -d '[:space:]'
 }
 
@@ -1230,8 +1138,7 @@ do_check() {
 }
 
 do_update() {
-  # Refuse on dev clones — git checkouts are the user's working tree, not
-  # something we want to clobber with a tarball.
+  # Dev clones (git checkouts) are the user's working tree — don't clobber.
   if [[ -d "$REPO/.git" ]]; then
     warn "$REPO is a git clone — use 'git pull' here, not 'phoenix-term update'"
     warn "the release-based updater is for installs made via bootstrap.sh"
@@ -1273,9 +1180,6 @@ do_update() {
   mv "$src_dir" "$REPO"
   echo "$latest" > "$REPO/.version"
 
-  # User settings (~/.config/phoenix-term/config.zsh) live outside $REPO, so
-  # the swap above can't have touched them. Surface this so the user knows
-  # their preferences carried over.
   if [[ -f "$HOME/.config/phoenix-term/config.zsh" ]]; then
     say "user settings preserved → $HOME/.config/phoenix-term/config.zsh"
   fi
@@ -1285,17 +1189,9 @@ do_update() {
 }
 
 # ---------- backups / revert ----------
-#
-# Every `--update` rotates the prior install dir to `$REPO.bak-<timestamp>`
-# before extracting the new release. Those backups never get pruned
-# automatically — `--revert` rolls back to the most recent one (and rotates
-# the *current* install to a new backup at the same time, so a revert is
-# itself revertable). `--backups` lists what's available.
 
-# Emit one "path|version|human-date" line per backup, newest first.
 phoenix_list_backups() {
   local dir version ts human
-  # `ls -1dt` sorts directories by mtime descending; works on macOS + Linux.
   for dir in $(ls -1dt "$REPO".bak-* 2>/dev/null); do
     [[ -d "$dir" ]] || continue
     version="(unknown)"
@@ -1303,7 +1199,6 @@ phoenix_list_backups() {
       version=$(head -1 "$dir/.version" 2>/dev/null | tr -d '[:space:]')
       [[ -z "$version" ]] && version="(unknown)"
     fi
-    # Parse the timestamp suffix back into YYYY-MM-DD HH:MM:SS for display.
     ts="${dir##*.bak-}"
     if [[ ${#ts} -eq 14 ]]; then
       human="${ts:0:4}-${ts:4:2}-${ts:6:2} ${ts:8:2}:${ts:10:2}:${ts:12:2}"
@@ -1363,15 +1258,13 @@ do_revert() {
     return 0
   fi
 
-  # Rotate current aside (revert is itself revertable — calling revert again
-  # would now restore this snapshot).
+  # Revert is itself revertable: rotate current aside, then restore target.
   local rolled="$REPO.bak-$(date +%Y%m%d%H%M%S)"
   mv "$REPO" "$rolled"
   say "rotated current install → $rolled"
   mv "$target" "$REPO"
   say "restored $target → $REPO"
 
-  # User settings live outside $REPO — they're untouched by this rotation.
   if [[ -f "$HOME/.config/phoenix-term/config.zsh" ]]; then
     say "user settings preserved → $HOME/.config/phoenix-term/config.zsh"
   fi
@@ -1382,16 +1275,10 @@ do_revert() {
 
 # ---------- settings ----------
 #
-# User preferences stored as sourceable shell at ~/.config/phoenix-term/config.zsh.
-# phoenix.zsh sources it at the top of every interactive shell, so the env vars
-# are set before any behavior check runs.
-#
-# Row layout:  KEY | DEFAULT | TYPE | DESCRIPTION | TYPE_ARGS
-#   TYPE      ∈ { text, enum, path, bool }
-#   TYPE_ARGS  enum → comma-separated allowed values (first one is "on" color)
-#              bool → "on-label|off-label"  (using a literal | INSIDE the field
-#                                            isn't possible with our delimiter,
-#                                            so use a slash:  "on/off")
+# Settings row layout:  KEY | DEFAULT | TYPE | DESCRIPTION | TYPE_ARGS
+#   TYPE ∈ { text, enum, path, bool }
+#   TYPE_ARGS  enum → "v1,v2,…"; bool → "on/off" (slash, not |, since | is the
+#                                                  outer-row delimiter).
 
 PHOENIX_CFG_DIR="$HOME/.config/phoenix-term"
 PHOENIX_CFG_FILE="$PHOENIX_CFG_DIR/config.zsh"
@@ -1405,13 +1292,9 @@ SETTINGS=(
   "PHOENIX_NVIM_DEFAULT|1|bool|Make nvim the default editor (alias vi/vim, set \$EDITOR)|on/off"
 )
 
-# Generated Ghostty overrides written by settings — points at this file
-# from repo/ghostty/phoenix.config's `config-file` directive. The phoenix
-# main config never gets edited; mode changes only touch this user file.
 PHOENIX_GHOSTTY_USER_CONF="$HOME/.config/ghostty/phoenix-user.conf"
 
 settings_field() {
-  # Echo the Nth (1-based) field of the row matching KEY in SETTINGS.
   local key="$1" n="$2" row
   for row in "${SETTINGS[@]}"; do
     if [[ "${row%%|*}" == "$key" ]]; then
@@ -1428,8 +1311,8 @@ settings_desc()    { settings_field "$1" 4; }
 settings_type_args() { settings_field "$1" 5; }
 
 settings_get() {
-  # Reads only the persisted config file. The shell env may carry stale
-  # values from a prior `phoenix.zsh` source, so we deliberately ignore it.
+  # Reads only the config file; the shell env may carry stale values from
+  # a prior `phoenix.zsh` source.
   local key="$1"
   if [[ -f "$PHOENIX_CFG_FILE" ]]; then
     local v; v=$(grep -E "^export $key=" "$PHOENIX_CFG_FILE" 2>/dev/null | tail -1 \
@@ -1447,7 +1330,6 @@ settings_set() {
   fi
   local type; type=$(settings_type "$key")
 
-  # Type-specific validation, applied before any side-effect.
   case "$type" in
     bool)
       [[ "$value" == "0" || "$value" == "1" ]] || {
@@ -1466,16 +1348,14 @@ settings_set() {
   (( DRY_RUN )) && { dry "set $key=$value in $PHOENIX_CFG_FILE"; return; }
   if [[ ! -f "$PHOENIX_CFG_FILE" ]]; then settings_ensure; fi
 
-  # Apply side-effects before writing, so a failure (e.g. missing image)
-  # doesn't leave the config out of sync with reality. Pass new values
-  # explicitly — settings_get reads the file, which hasn't been written yet.
+  # Apply side-effects BEFORE writing so a failure (e.g. missing image)
+  # doesn't desync config from reality.
   case "$key" in
     PHOENIX_BG)       settings_apply_bg "$value" || return 1 ;;
     PHOENIX_BG_MODE)  settings_apply_bg_mode "$value" "$(settings_get PHOENIX_BG_COLOR)" ;;
     PHOENIX_BG_COLOR) settings_apply_bg_mode "$(settings_get PHOENIX_BG_MODE)" "$value" ;;
   esac
 
-  # Always quote stored values so spaces (e.g. PHOENIX_NAME="My Name") survive.
   local escaped="${value//\"/\\\"}"
   local tmp; tmp=$(mktemp)
   if grep -qE "^export $key=" "$PHOENIX_CFG_FILE"; then
@@ -1491,9 +1371,6 @@ settings_set() {
 }
 
 settings_apply_bg() {
-  # Resolve a PHOENIX_BG value to an image path and repoint the symlink.
-  #   "phoenix"   → repo's ghostty/phoenix-bg.jpg
-  #   "<path>"    → that file (expanded, must exist)
   local value="$1"
   local dest="$HOME/.config/ghostty/phoenix-bg.jpg"
   local target
@@ -1513,20 +1390,14 @@ settings_apply_bg() {
 }
 
 settings_apply_bg_mode() {
-  # Two modes:
-  #   image  — Ghostty draws the wallpaper. No per-pane styling; the
-  #            image shows through banner, main, sysmon, and dividers.
-  #   color  — Ghostty's `background = <color>` paints the whole window.
-  #            Cells inherit it. We also set the pane-border bg so the
-  #            1-cell divider line picks up the same color.
-  # Mode and color are passed explicitly — settings_set calls us with the
-  # new values before they hit the config file, so we can't rely on
-  # settings_get for whichever is changing.
+  # mode/color passed explicitly because settings_set calls us BEFORE writing
+  # the new value, so settings_get would still return the old one.
   local mode="${1:-image}"
   local color="${2:-$(settings_get PHOENIX_BG_COLOR)}"
   [[ -z "$color" ]] && color="#0c0f11"
 
   # ----- Ghostty override file -----
+
   run mkdir -p "$(dirname "$PHOENIX_GHOSTTY_USER_CONF")"
   if (( DRY_RUN )); then
     dry "write $PHOENIX_GHOSTTY_USER_CONF for mode=$mode color=$color"
@@ -1550,17 +1421,16 @@ settings_apply_bg_mode() {
   fi
 
   # ----- tmux pane + border styling -----
+
   command -v tmux >/dev/null 2>&1 || return 0
 
   local pane_style border_style
   case "$mode" in
     image)
-      # Every pane transparent. Image shows through; dividers stay default.
       pane_style="bg=default"
       border_style="fg=#1c2027"
       ;;
     color)
-      # Every pane explicitly painted with the bg color. Dividers too.
       pane_style="bg=$color"
       border_style="fg=#1c2027,bg=$color"
       ;;
@@ -1569,9 +1439,6 @@ settings_apply_bg_mode() {
   tmux set-option -g pane-border-style "$border_style" 2>/dev/null || true
   tmux set-option -g pane-active-border-style "$border_style" 2>/dev/null || true
 
-  # Apply pane bg to EVERY phoenix pane across all sessions — not just
-  # banner/sysmon, also the main shell pane so its cells (and any cells
-  # without explicit bg in its content) match the chosen mode.
   tmux list-panes -a -F '#{pane_id}' 2>/dev/null \
     | while read -r p; do
         tmux select-pane -t "$p" -P "$pane_style" 2>/dev/null || true
@@ -1581,10 +1448,9 @@ settings_apply_bg_mode() {
 }
 
 settings_ensure() {
-  # CONTRACT: this function MUST NOT overwrite an existing config file —
-  # user settings are preserved across every install, update, and revert.
-  # The early-return below is the load-bearing line for that guarantee;
-  # don't add an "upgrade" branch that rewrites the file in place.
+  # CONTRACT: MUST NOT overwrite an existing config — user settings are
+  # preserved across every install/update/revert. The early return is
+  # load-bearing for that guarantee.
   if [[ -f "$PHOENIX_CFG_FILE" ]]; then return 0; fi
   run mkdir -p "$PHOENIX_CFG_DIR"
   if (( DRY_RUN )); then dry "write default config to $PHOENIX_CFG_FILE"; return; fi
@@ -1603,7 +1469,6 @@ settings_ensure() {
 }
 
 settings_render_label() {
-  # Colored, human-friendly rendering of a value, given its key.
   local key="$1" val="$2" type
   type=$(settings_type "$key")
   case "$type" in
@@ -1627,7 +1492,6 @@ settings_render_label() {
       if [[ "$val" == "phoenix" || -z "$val" ]]; then
         printf "%s%s%s" "$DIM" "phoenix (default)" "$R"
       else
-        # Squash $HOME → ~ for readability.
         printf "%s%s%s" "$SEA" "${val/#$HOME/~}" "$R"
       fi
       ;;
@@ -1638,7 +1502,6 @@ settings_render_label() {
 }
 
 settings_edit_one() {
-  # Drive the per-setting prompt based on the field's type.
   local key="$1" type cur args
   type=$(settings_type "$key")
   cur=$(settings_get "$key")
@@ -1705,7 +1568,6 @@ settings_menu() {
       [rR])
         rm -f "$PHOENIX_CFG_FILE"
         settings_ensure
-        # Also reset the background symlink to repo default.
         settings_apply_bg phoenix || true
         say "reset to defaults"
         ;;
