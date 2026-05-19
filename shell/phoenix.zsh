@@ -110,7 +110,7 @@ for __fsh in \
 done
 unset __fsh
 
-if [[ -o interactive && -z "$TMUX" ]] && command -v tmux >/dev/null; then
+if [[ -o interactive && -z "$TMUX" && -t 0 && -t 1 ]] && command -v tmux >/dev/null; then
   exec tmux new-session
 fi
 
