@@ -308,13 +308,13 @@ LINKS=(
 )
 
 BREW_FORMULAS=(
-  tmux starship zoxide fzf eza bat fd ripgrep lazygit gh atuin yazi
+  tmux starship zoxide fzf eza bat fd ripgrep lazygit lazydocker gh atuin yazi
   btop tldr zsh-autosuggestions zsh-fast-syntax-highlighting figlet
   neovim
 )
 BREW_CASKS=(ghostty font-comic-shanns-mono-nerd-font)
 
-# Tools not in apt (starship, eza, lazygit, atuin, yazi, neovim ≥ 0.9,
+# Tools not in apt (starship, eza, lazygit, lazydocker, atuin, yazi, neovim ≥ 0.9,
 # ghostty, zsh-fast-syntax-highlighting) are fetched in install_linux_extras.
 # Packages here that don't exist on a given distro are filtered before install.
 APT_PACKAGES=(
@@ -509,6 +509,26 @@ install_lazygit_linux() {
   rm -rf "$tmp"
 }
 
+install_lazydocker_linux() {
+  command -v lazydocker >/dev/null && return 0
+  say "installing lazydocker (GitHub release)"
+  if (( DRY_RUN )); then dry "fetch lazydocker release binary"; return 0; fi
+  local tag ver arch
+  tag=$(gh_latest_tag jesseduffield/lazydocker); tag="${tag:-v0.24.1}"
+  ver="${tag#v}"
+  case "$PHOENIX_ARCH" in
+    x86_64)  arch=Linux_x86_64 ;;
+    aarch64) arch=Linux_arm64 ;;
+  esac
+  local tmp; tmp=$(mktemp -d)
+  curl -fsSL -o "$tmp/lazydocker.tar.gz" "https://github.com/jesseduffield/lazydocker/releases/download/$tag/lazydocker_${ver}_${arch}.tar.gz"
+  tar -xzf "$tmp/lazydocker.tar.gz" -C "$tmp" lazydocker
+  mkdir -p "$HOME/.local/bin"
+  mv "$tmp/lazydocker" "$HOME/.local/bin/lazydocker"
+  chmod +x "$HOME/.local/bin/lazydocker"
+  rm -rf "$tmp"
+}
+
 install_yazi_linux() {
   command -v yazi >/dev/null && return 0
   say "installing yazi (GitHub release)"
@@ -678,6 +698,7 @@ install_linux_extras() {
   ( install_gh_linux )             || warn "gh install failed — try later: sudo apt install gh (after the cli.github.com repo step)"
   ( install_eza_linux )            || warn "eza install failed — 'ls' alias will fall back to default ls"
   ( install_lazygit_linux )        || warn "lazygit install failed — 'lg' alias unavailable"
+  ( install_lazydocker_linux )     || warn "lazydocker install failed — 'ld' alias unavailable"
   ( install_yazi_linux )           || warn "yazi install failed — 'y' file-manager alias unavailable"
   ( install_neovim_linux )         || warn "neovim install failed — LazyVim won't run; install nvim ≥ 0.9 and re-run"
   ( install_zsh_fsh_linux )        || warn "zsh-fast-syntax-highlighting clone failed — syntax highlighting off"
@@ -756,7 +777,7 @@ install_packages_macos() {
 install_packages_debian() {
   say "installing apt packages"
   install_apt_packages
-  say "installing Linux extras (starship, eza, lazygit, neovim, ghostty, fonts, …)"
+  say "installing Linux extras (starship, eza, lazygit, lazydocker, neovim, ghostty, fonts, …)"
   install_linux_extras
 }
 
@@ -994,7 +1015,7 @@ do_doctor() {
       done
       printf "\n%sLinux extras%s\n" "$DIM" "$R"
       local tool
-      for tool in starship zoxide atuin gh eza lazygit yazi nvim; do
+      for tool in starship zoxide atuin gh eza lazygit lazydocker yazi nvim; do
         if command -v "$tool" >/dev/null; then ok "$tool ($(command -v "$tool"))"
         else bad "$tool not in PATH"; fail=1; fi
       done

@@ -2,7 +2,7 @@
 
 A complete, opinionated terminal stack for **macOS and Debian/Ubuntu Linux** — Ghostty + tmux + Starship + LazyVim — with a live system-monitor sidebar, a welcome banner, per-command divider rules, and a cohesive LightSeaGreen + Phoenix color theme across every layer.
 
-One command installs everything: terminal, font, shell plugins, editor, sidebar, and ~17 modern CLI tools.
+One command installs everything: terminal, font, shell plugins, editor, sidebar, and ~18 modern CLI tools.
 
 ---
 
@@ -39,6 +39,7 @@ One command installs everything: terminal, font, shell plugins, editor, sidebar,
 | Editor               | Neovim + LazyVim with the `phoenix` Black-and-Gold colorscheme         |
 | Fuzzy / nav / search | fzf · zoxide · fd · ripgrep · eza · bat · atuin · yazi · btop          |
 | Git                  | lazygit (TUI) · gh (GitHub CLI) · git aliases                          |
+| Docker               | lazydocker (TUI for containers / images / volumes / logs)              |
 | Help                 | tldr (community man-page summaries)                                    |
 | Clipboard            | `phoenix-clip` — pbcopy on macOS, wl-copy / xclip on Linux             |
 
@@ -166,6 +167,7 @@ These are the commands you'll use most. All of them are zsh aliases set up by `s
 | `gl`         | `git pull`                                         |
 | `gcm "msg"`  | `git commit -m "msg"`                              |
 | `lg`         | Open **lazygit** — full-screen git TUI             |
+| `ld`         | Open **lazydocker** — full-screen docker TUI       |
 | `gh`         | GitHub CLI (`gh pr create`, `gh issue list`, …)    |
 
 ### Tmux
@@ -284,6 +286,7 @@ Quick reference so you know what each tool is for. The shell aliases in the [che
 | **fd**       | Fast, intuitive `find`                        | `find <pattern>`                    |
 | **ripgrep**  | Fast in-file search                           | `rg <pattern>`                      |
 | **lazygit**  | Full-screen git TUI                           | `lg`                                |
+| **lazydocker** | Full-screen docker TUI (containers/logs/…)  | `ld`                                |
 | **gh**       | GitHub CLI                                    | `gh auth login`, `gh pr create`     |
 | **yazi**     | TUI file manager — cd's where you exit        | `y`                                 |
 | **btop**     | Beautiful process monitor                     | `top`                               |

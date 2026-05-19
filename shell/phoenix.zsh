@@ -66,7 +66,8 @@ fi
 command -v bat     >/dev/null && alias cat='bat --paging=never --style=plain'
 command -v bat     >/dev/null && export MANPAGER="sh -c 'col -bx | bat -l man -p'"
 command -v fd      >/dev/null && alias find='fd'
-command -v lazygit >/dev/null && alias lg='lazygit'
+command -v lazygit    >/dev/null && alias lg='lazygit'
+command -v lazydocker >/dev/null && alias ld='lazydocker'
 command -v btop    >/dev/null && alias top='btop'
 
 if [[ "${PHOENIX_NVIM_DEFAULT:-1}" != "0" ]] && command -v nvim >/dev/null; then
@@ -149,9 +150,10 @@ phoenix-welcome() {
   __phoenix_skip_next_divider=1
 }
 
-# Daily release-update check. /releases/latest redirect avoids GitHub API
+# Hourly release-update check. /releases/latest redirect avoids GitHub API
 # auth + the 60-req/hr unauth rate limit; curl runs in the background so
-# it never blocks the prompt.
+# it never blocks the prompt. The notice itself prints on every shell from
+# the cached tag — only the fetch is throttled.
 __phoenix_update_check() {
   local repo="${PHOENIX_REPO:-${${(%):-%x}:A:h:h}}"
   local gh="${PHOENIX_GH_REPO:-DevGeekPhoenix/phoenix-term}"
@@ -164,7 +166,7 @@ __phoenix_update_check() {
   local last=0
   [[ -f "$stamp" ]] && last=$(cat "$stamp" 2>/dev/null || echo 0)
 
-  if (( now - last > 86400 )); then
+  if (( now - last > 3600 )); then
     mkdir -p "$cache"
     echo "$now" > "$stamp"
     {
@@ -174,7 +176,6 @@ __phoenix_update_check() {
       tag="${resolved##*/tag/}"
       [[ -n "$tag" && "$tag" != "$resolved" ]] && printf '%s\n' "$tag" > "$latest_cache"
     } &!
-    return
   fi
 
   [[ -f "$latest_cache" ]] || return
