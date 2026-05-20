@@ -4,6 +4,8 @@ A complete, opinionated terminal stack for **macOS and Debian/Ubuntu Linux** —
 
 One command installs everything: terminal, font, shell plugins, editor, sidebar, and ~18 modern CLI tools.
 
+![](assets/images/image-20260520-235529-vdng.png)
+
 ---
 
 ## Table of contents
@@ -61,7 +63,7 @@ That's it. You'll click through **two macOS dialogs** mid-install: the Xcode Com
 
 ### Linux (Debian/Ubuntu and derivatives)
 
-Supported: **Ubuntu, Debian, Mint, Pop!_OS, Kali, elementary, Zorin, Raspbian**. Architectures: **x86_64, aarch64**.
+Supported: **Ubuntu, Debian, Mint, Pop!\_OS, Kali, elementary, Zorin, Raspbian**. Architectures: **x86_64, aarch64**.
 
 If you're on a fresh box without `curl` yet:
 
@@ -126,87 +128,87 @@ These are the commands you'll use most. All of them are zsh aliases set up by `s
 
 ### Listing files
 
-| Command | What it does                                       |
-| ------- | -------------------------------------------------- |
-| `ls`    | List files with icons (`eza --icons`)              |
-| `l`     | Long listing with icons                            |
-| `ll`    | Long listing including hidden files + git status   |
-| `lt`    | Tree view, 2 levels deep                           |
-| `ltt`   | Tree view, 3 levels deep                           |
+| Command | What it does                                     |
+| ------- | ------------------------------------------------ |
+| `ls`    | List files with icons (`eza --icons`)            |
+| `l`     | Long listing with icons                          |
+| `ll`    | Long listing including hidden files + git status |
+| `lt`    | Tree view, 2 levels deep                         |
+| `ltt`   | Tree view, 3 levels deep                         |
 
 ### Navigating
 
-| Command         | What it does                                       |
-| --------------- | -------------------------------------------------- |
-| `cd <dir>`      | Smart cd via zoxide — also remembers your history  |
-| `cd <fuzzy>`    | `cd phx` jumps to any directory containing "phx"   |
-| `cd -`          | Go back to the previous directory                  |
-| `..`            | Go up one level                                    |
-| `...`           | Go up two levels                                   |
-| `....`          | Go up three levels                                 |
-| `zi`            | Interactive directory picker (fzf-style)           |
-| `z <fuzzy>`     | Same as `cd <fuzzy>` (zoxide's native name)        |
+| Command      | What it does                                      |
+| ------------ | ------------------------------------------------- |
+| `cd <dir>`   | Smart cd via zoxide — also remembers your history |
+| `cd <fuzzy>` | `cd phx` jumps to any directory containing "phx"  |
+| `cd -`       | Go back to the previous directory                 |
+| `..`         | Go up one level                                   |
+| `...`        | Go up two levels                                  |
+| `....`       | Go up three levels                                |
+| `zi`         | Interactive directory picker (fzf-style)          |
+| `z <fuzzy>`  | Same as `cd <fuzzy>` (zoxide's native name)       |
 
 ### Files
 
-| Command            | What it does                                       |
-| ------------------ | -------------------------------------------------- |
-| `cat <file>`       | Syntax-highlighted view (`bat`)                    |
-| `find <pattern>`   | Fast `fd` search (replaces GNU find)               |
-| `rg <pattern>`     | Fast in-file search (ripgrep)                      |
-| `y`                | Open yazi file manager — cd's to wherever you exit |
+| Command          | What it does                                       |
+| ---------------- | -------------------------------------------------- |
+| `cat <file>`     | Syntax-highlighted view (`bat`)                    |
+| `find <pattern>` | Fast `fd` search (replaces GNU find)               |
+| `rg <pattern>`   | Fast in-file search (ripgrep)                      |
+| `y`              | Open yazi file manager — cd's to wherever you exit |
 
 ### Git
 
-| Command      | What it does                                       |
-| ------------ | -------------------------------------------------- |
-| `g`          | `git`                                              |
-| `gst`        | `git status`                                       |
-| `gco <ref>`  | `git checkout`                                     |
-| `gp`         | `git push`                                         |
-| `gl`         | `git pull`                                         |
-| `gcm "msg"`  | `git commit -m "msg"`                              |
-| `lg`         | Open **lazygit** — full-screen git TUI             |
-| `ld`         | Open **lazydocker** — full-screen docker TUI       |
-| `gh`         | GitHub CLI (`gh pr create`, `gh issue list`, …)    |
+| Command     | What it does                                    |
+| ----------- | ----------------------------------------------- |
+| `g`         | `git`                                           |
+| `gst`       | `git status`                                    |
+| `gco <ref>` | `git checkout`                                  |
+| `gp`        | `git push`                                      |
+| `gl`        | `git pull`                                      |
+| `gcm "msg"` | `git commit -m "msg"`                           |
+| `lg`        | Open **lazygit** — full-screen git TUI          |
+| `ld`        | Open **lazydocker** — full-screen docker TUI    |
+| `gh`        | GitHub CLI (`gh pr create`, `gh issue list`, …) |
 
 ### Tmux
 
-| Command        | What it does                          |
-| -------------- | ------------------------------------- |
-| `ta <name>`    | Attach to a tmux session              |
-| `tn <name>`    | Start a new named tmux session        |
-| `tl`           | List existing tmux sessions           |
-| `tk <name>`    | Kill a tmux session                   |
+| Command     | What it does                   |
+| ----------- | ------------------------------ |
+| `ta <name>` | Attach to a tmux session       |
+| `tn <name>` | Start a new named tmux session |
+| `tl`        | List existing tmux sessions    |
+| `tk <name>` | Kill a tmux session            |
 
 ### History & search
 
-| Command  | What it does                                          |
-| -------- | ----------------------------------------------------- |
-| `Ctrl-R` | **atuin** fuzzy search across all your shell history  |
-| `Ctrl-T` | **fzf** picker for any file under cwd                 |
-| `Alt-C`  | **fzf** picker for any directory under cwd            |
+| Command  | What it does                                         |
+| -------- | ---------------------------------------------------- |
+| `Ctrl-R` | **atuin** fuzzy search across all your shell history |
+| `Ctrl-T` | **fzf** picker for any file under cwd                |
+| `Alt-C`  | **fzf** picker for any directory under cwd           |
 
 ### Editor
 
-| Command        | What it does                                       |
-| -------------- | -------------------------------------------------- |
-| `nvim <file>`  | Open in Neovim (LazyVim)                           |
-| `vi <file>`    | Aliased to `nvim`                                  |
-| `vim <file>`   | Aliased to `nvim`                                  |
+| Command       | What it does             |
+| ------------- | ------------------------ |
+| `nvim <file>` | Open in Neovim (LazyVim) |
+| `vi <file>`   | Aliased to `nvim`        |
+| `vim <file>`  | Aliased to `nvim`        |
 
 ### System monitor
 
-| Command | What it does                                       |
-| ------- | -------------------------------------------------- |
-| `top`   | Open **btop** — interactive process monitor        |
+| Command | What it does                                |
+| ------- | ------------------------------------------- |
+| `top`   | Open **btop** — interactive process monitor |
 
 ### Help
 
-| Command          | What it does                                  |
-| ---------------- | --------------------------------------------- |
-| `tldr <cmd>`     | Community man-page summary with examples      |
-| `man <cmd>`      | Real man pages — rendered with `bat` styling  |
+| Command      | What it does                                 |
+| ------------ | -------------------------------------------- |
+| `tldr <cmd>` | Community man-page summary with examples     |
+| `man <cmd>`  | Real man pages — rendered with `bat` styling |
 
 ---
 
@@ -214,15 +216,15 @@ These are the commands you'll use most. All of them are zsh aliases set up by `s
 
 ### Ghostty (terminal window)
 
-| Shortcut         | Action                            |
-| ---------------- | --------------------------------- |
-| `Cmd-T`          | New tab (new tmux session)        |
-| `Cmd-D`          | Split right within Ghostty        |
-| `Cmd-Shift-D`    | Split down within Ghostty         |
-| `Cmd-W`          | Close current pane/tab            |
-| `Cmd-Shift-Enter`| Toggle fullscreen                 |
-| `Cmd-Alt-←/→/↑/↓`| Move focus between Ghostty splits |
-| `Cmd-K`          | Clear screen                      |
+| Shortcut          | Action                            |
+| ----------------- | --------------------------------- |
+| `Cmd-T`           | New tab (new tmux session)        |
+| `Cmd-D`           | Split right within Ghostty        |
+| `Cmd-Shift-D`     | Split down within Ghostty         |
+| `Cmd-W`           | Close current pane/tab            |
+| `Cmd-Shift-Enter` | Toggle fullscreen                 |
+| `Cmd-Alt-←/→/↑/↓` | Move focus between Ghostty splits |
+| `Cmd-K`           | Clear screen                      |
 
 > On Linux replace `Cmd` with whatever Super/Meta key your DE uses (Ghostty's defaults work on Linux too, but your window manager may shadow some bindings).
 
@@ -230,42 +232,42 @@ These are the commands you'll use most. All of them are zsh aliases set up by `s
 
 To send any tmux command, hit `Ctrl-A` first, **release**, then the next key.
 
-| Shortcut         | Action                                              |
-| ---------------- | --------------------------------------------------- |
-| `Ctrl-A S`       | **Toggle the system-monitor sidebar**               |
-| `Ctrl-A \|`      | Split pane right                                    |
-| `Ctrl-A -`       | Split pane down                                     |
-| `Ctrl-A c`       | New tmux window                                     |
-| `Ctrl-A h/j/k/l` | Move between panes (vim-style)                      |
-| `Ctrl-A H/J/K/L` | Resize current pane                                 |
-| `Ctrl-A r`       | Reload tmux config                                  |
-| `Ctrl-A [`       | Enter copy-mode (scroll + select)                   |
-| `Ctrl-A d`       | Detach from session (session keeps running)         |
-| Mouse drag       | Selects in copy-mode (mouse mode is on by default)  |
+| Shortcut         | Action                                             |
+| ---------------- | -------------------------------------------------- |
+| `Ctrl-A S`       | **Toggle the system-monitor sidebar**              |
+| `Ctrl-A \|`      | Split pane right                                   |
+| `Ctrl-A -`       | Split pane down                                    |
+| `Ctrl-A c`       | New tmux window                                    |
+| `Ctrl-A h/j/k/l` | Move between panes (vim-style)                     |
+| `Ctrl-A H/J/K/L` | Resize current pane                                |
+| `Ctrl-A r`       | Reload tmux config                                 |
+| `Ctrl-A [`       | Enter copy-mode (scroll + select)                  |
+| `Ctrl-A d`       | Detach from session (session keeps running)        |
+| Mouse drag       | Selects in copy-mode (mouse mode is on by default) |
 
 ### Copy mode (after `Ctrl-A [`)
 
-| Shortcut | Action                                                              |
-| -------- | ------------------------------------------------------------------- |
-| `v`      | Start selection (vi keys)                                           |
-| `y`      | Copy selection to **system clipboard** (`phoenix-clip` handles it)  |
-| `q`      | Quit copy mode                                                      |
-| `/` `?`  | Search forward / backward                                           |
+| Shortcut | Action                                                             |
+| -------- | ------------------------------------------------------------------ |
+| `v`      | Start selection (vi keys)                                          |
+| `y`      | Copy selection to **system clipboard** (`phoenix-clip` handles it) |
+| `q`      | Quit copy mode                                                     |
+| `/` `?`  | Search forward / backward                                          |
 
 ### Neovim / LazyVim
 
 LazyVim provides hundreds of bindings; these are the ones you'll touch first:
 
-| Shortcut       | Action                                |
-| -------------- | ------------------------------------- |
-| `Space`        | Leader key — opens the LazyVim menu   |
-| `Space f f`    | Find file (fzf)                       |
-| `Space f g`    | Live grep across the project          |
-| `Space e`      | Toggle the file-tree sidebar          |
-| `Space g g`    | Open lazygit inside nvim              |
-| `Space l`      | Open the Lazy plugin manager          |
-| `Space q q`    | Quit                                  |
-| `:Mason`       | Manage LSPs, formatters, linters      |
+| Shortcut    | Action                              |
+| ----------- | ----------------------------------- |
+| `Space`     | Leader key — opens the LazyVim menu |
+| `Space f f` | Find file (fzf)                     |
+| `Space f g` | Live grep across the project        |
+| `Space e`   | Toggle the file-tree sidebar        |
+| `Space g g` | Open lazygit inside nvim            |
+| `Space l`   | Open the Lazy plugin manager        |
+| `Space q q` | Quit                                |
+| `:Mason`    | Manage LSPs, formatters, linters    |
 
 The Phoenix Black-and-Gold colorscheme is set automatically. To browse all LazyVim keymaps: `Space s k`.
 
@@ -275,24 +277,24 @@ The Phoenix Black-and-Gold colorscheme is set automatically. To browse all LazyV
 
 Quick reference so you know what each tool is for. The shell aliases in the [cheatsheet](#daily-commands-cheatsheet) cover the most common usage.
 
-| Tool         | What it is                                    | First command to try                |
-| ------------ | --------------------------------------------- | ----------------------------------- |
-| **starship** | Cross-shell prompt (the rounded pills)        | already on every prompt             |
-| **fzf**      | General-purpose fuzzy finder                  | `Ctrl-R`, `Ctrl-T`, `Alt-C`         |
-| **zoxide**   | Smarter `cd` — remembers your directories     | `cd <fragment>`, `zi`               |
-| **atuin**    | Searchable, sync-able shell history           | `Ctrl-R`, then `atuin import auto`  |
-| **eza**      | Modern `ls` with icons + git column           | `ls`, `ll`, `lt`                    |
-| **bat**      | Syntax-highlighted `cat`                      | `cat <file>`                        |
-| **fd**       | Fast, intuitive `find`                        | `find <pattern>`                    |
-| **ripgrep**  | Fast in-file search                           | `rg <pattern>`                      |
-| **lazygit**  | Full-screen git TUI                           | `lg`                                |
-| **lazydocker** | Full-screen docker TUI (containers/logs/…)  | `ld`                                |
-| **gh**       | GitHub CLI                                    | `gh auth login`, `gh pr create`     |
-| **yazi**     | TUI file manager — cd's where you exit        | `y`                                 |
-| **btop**     | Beautiful process monitor                     | `top`                               |
-| **tldr**     | Community man-page summaries                  | `tldr tar`                          |
-| **figlet**   | ASCII-art text                                | `figlet -f ANSI_Shadow "HELLO"`     |
-| **neovim**   | Modal editor — paired with LazyVim distro     | `nvim`                              |
+| Tool           | What it is                                 | First command to try               |
+| -------------- | ------------------------------------------ | ---------------------------------- |
+| **starship**   | Cross-shell prompt (the rounded pills)     | already on every prompt            |
+| **fzf**        | General-purpose fuzzy finder               | `Ctrl-R`, `Ctrl-T`, `Alt-C`        |
+| **zoxide**     | Smarter `cd` — remembers your directories  | `cd <fragment>`, `zi`              |
+| **atuin**      | Searchable, sync-able shell history        | `Ctrl-R`, then `atuin import auto` |
+| **eza**        | Modern `ls` with icons + git column        | `ls`, `ll`, `lt`                   |
+| **bat**        | Syntax-highlighted `cat`                   | `cat <file>`                       |
+| **fd**         | Fast, intuitive `find`                     | `find <pattern>`                   |
+| **ripgrep**    | Fast in-file search                        | `rg <pattern>`                     |
+| **lazygit**    | Full-screen git TUI                        | `lg`                               |
+| **lazydocker** | Full-screen docker TUI (containers/logs/…) | `ld`                               |
+| **gh**         | GitHub CLI                                 | `gh auth login`, `gh pr create`    |
+| **yazi**       | TUI file manager — cd's where you exit     | `y`                                |
+| **btop**       | Beautiful process monitor                  | `top`                              |
+| **tldr**       | Community man-page summaries               | `tldr tar`                         |
+| **figlet**     | ASCII-art text                             | `figlet -f ANSI_Shadow "HELLO"`    |
+| **neovim**     | Modal editor — paired with LazyVim distro  | `nvim`                             |
 
 **One-time setup recommended:**
 
@@ -308,18 +310,18 @@ atuin import auto          # Pulls in your existing shell history
 Phoenix has two layers of config:
 
 1. **Persistent preferences** — `~/.config/phoenix-term/config.zsh`, managed via `phoenix-term settings`
-2. **Per-shell overrides** — export an env var in `~/.zshrc` *before* the phoenix source line
+2. **Per-shell overrides** — export an env var in `~/.zshrc` _before_ the phoenix source line
 
 ### Available settings
 
-| Key                     | Type | Default       | Effect                                                        |
-| ----------------------- | ---- | ------------- | ------------------------------------------------------------- |
-| `PHOENIX_NAME`          | text | `DEV PHOENIX` | Name on the welcome banner and sysmon title                   |
-| `PHOENIX_BANNER_STICKY` | enum | `sticky`      | `sticky` (pane), `inline` (per shell), or `off`               |
-| `PHOENIX_BG`            | path | `phoenix`    | Ghostty background image — path or `phoenix` for the default  |
-| `PHOENIX_BG_MODE`       | enum | `image`       | `image` (wallpaper) or `color` (solid background)             |
-| `PHOENIX_BG_COLOR`      | text | `#0c0f11`     | Background color when `BG_MODE=color`                         |
-| `PHOENIX_NVIM_DEFAULT`  | bool | `1`           | Make `nvim` the default `$EDITOR` (also aliases `vi`/`vim`)   |
+| Key                     | Type | Default       | Effect                                                       |
+| ----------------------- | ---- | ------------- | ------------------------------------------------------------ |
+| `PHOENIX_NAME`          | text | `DEV PHOENIX` | Name on the welcome banner and sysmon title                  |
+| `PHOENIX_BANNER_STICKY` | enum | `sticky`      | `sticky` (pane), `inline` (per shell), or `off`              |
+| `PHOENIX_BG`            | path | `phoenix`     | Ghostty background image — path or `phoenix` for the default |
+| `PHOENIX_BG_MODE`       | enum | `image`       | `image` (wallpaper) or `color` (solid background)            |
+| `PHOENIX_BG_COLOR`      | text | `#0c0f11`     | Background color when `BG_MODE=color`                        |
+| `PHOENIX_NVIM_DEFAULT`  | bool | `1`           | Make `nvim` the default `$EDITOR` (also aliases `vi`/`vim`)  |
 
 ### Set them interactively
 
@@ -516,14 +518,14 @@ If you want to remove the installed tools too: `brew uninstall <pkg>` on macOS, 
 
 Common ones:
 
-| Failure | Fix |
-| ------- | --- |
-| `curl missing` on Linux | `sudo apt update && sudo apt install -y curl` |
-| `github.com unreachable` | Check network / proxy / DNS — the installer needs github.com |
-| `disk space: only XXMb free` | Free up ≥ 1 GB in `$HOME` |
-| `running as root` (macOS) | Exit and re-run as your regular user — Homebrew refuses root |
-| `sudo missing` (Linux) | `su -c 'apt install -y sudo && usermod -aG sudo $USER'` then start a new shell |
-| `apt lock held` | Wait 5 min for cloud-init / unattended-upgrades to finish, or `sudo systemctl stop unattended-upgrades` |
+| Failure                      | Fix                                                                                                     |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `curl missing` on Linux      | `sudo apt update && sudo apt install -y curl`                                                           |
+| `github.com unreachable`     | Check network / proxy / DNS — the installer needs github.com                                            |
+| `disk space: only XXMb free` | Free up ≥ 1 GB in `$HOME`                                                                               |
+| `running as root` (macOS)    | Exit and re-run as your regular user — Homebrew refuses root                                            |
+| `sudo missing` (Linux)       | `su -c 'apt install -y sudo && usermod -aG sudo $USER'` then start a new shell                          |
+| `apt lock held`              | Wait 5 min for cloud-init / unattended-upgrades to finish, or `sudo systemctl stop unattended-upgrades` |
 
 ### "command not found" after install
 
