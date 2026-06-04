@@ -1,7 +1,23 @@
 
 # Phoenix Terminal Stack — sourced from ~/.zshrc.
 
-[ -f "$HOME/.config/phoenix-term/config.zsh" ] && source "$HOME/.config/phoenix-term/config.zsh"
+if [[ -f "$HOME/.config/phoenix-term/config.zsh" ]]; then
+  typeset -A __phx_pre __phx_snap
+  typeset __phx_k __phx_l
+  for __phx_k in ${(k)parameters[(I)PHOENIX_*]}; do __phx_pre[$__phx_k]="${(P)__phx_k}"; done
+  for __phx_l in ${(f)__PHOENIX_CFG_SNAP}; do __phx_snap[${__phx_l%%=*}]="${__phx_l#*=}"; done
+  source "$HOME/.config/phoenix-term/config.zsh"
+  __PHOENIX_CFG_SNAP=""
+  for __phx_k in ${(k)parameters[(I)PHOENIX_*]}; do
+    __PHOENIX_CFG_SNAP+="${__phx_k}=${(P)__phx_k}"$'\n'
+  done
+  export __PHOENIX_CFG_SNAP
+  for __phx_k in ${(k)__phx_pre}; do
+    [[ "${__phx_snap[$__phx_k]-}" == "${__phx_pre[$__phx_k]}" ]] && continue
+    export "${__phx_k}=${__phx_pre[$__phx_k]}"
+  done
+  unset __phx_pre __phx_snap __phx_k __phx_l
+fi
 
 # Some tool init scripts emit output without a trailing newline at startup,
 # which paints zsh's `%` partial-line marker. Hide the marker — CR-before-prompt
@@ -111,9 +127,17 @@ for __fsh in \
 done
 unset __fsh
 
-if [[ -o interactive && -z "$TMUX" && -t 0 && -t 1 ]] && command -v tmux >/dev/null; then
-  exec tmux new-session
+__phoenix_want_tmux() {
+  case "${PHOENIX_AUTO_TMUX:-ghostty}" in
+    always|1|on|yes|true) return 0 ;;
+    never|0|off|no|false) return 1 ;;
+  esac
+  [[ "$TERM_PROGRAM" == ghostty || "$TERM" == xterm-ghostty ]]
+}
+if [[ -o interactive && -z "$TMUX" && -t 0 && -t 1 ]] && command -v tmux >/dev/null && __phoenix_want_tmux; then
+  exec tmux new-session -s "phoenix-$$" "exec $HOME/.local/bin/phoenix-tmux-init window"
 fi
+unset -f __phoenix_want_tmux
 
 phoenix-welcome() {
   local sea=$'\e[38;2;32;178;170m'
@@ -131,7 +155,10 @@ phoenix-welcome() {
     art="$name"
   fi
 
-  local width=$(echo "$art" | awk '{ if (length > m) m=length } END { print m }')
+  local width=0 __pw_line
+  while IFS= read -r __pw_line; do
+    (( ${#__pw_line} > width )) && width=${#__pw_line}
+  done <<< "$art"
   local lpad=$(( (cols - width) / 2 ))
   (( lpad < 0 )) && lpad=0
   local pad=$(printf '%*s' "$lpad" '')
@@ -204,6 +231,7 @@ if [[ -o interactive ]]; then
   __phoenix_update_check
   case "${PHOENIX_BANNER_STICKY:-sticky}" in
     inline) phoenix-welcome ;;
+    sticky) [[ -z "$TMUX" ]] && phoenix-welcome ;;
   esac
 fi
 
@@ -211,20 +239,90 @@ fi
 # top of an empty terminal.
 __phoenix_skip_next_divider=1
 
-__phoenix_prompt_divider() {
+__phoenix_render_divider() {
+  local dim=$'%{\e[38;2;90;90;90m%}' rst=$'%{\e[0m%}'
+  if [[ -n "$__phoenix_duration" ]]; then
+    local line=$'%{\e[38;2;71;82;98m%}' gold=$'%{\e[38;2;250;189;47m%}'
+    local dash="${(l:15::─:)}"
+    local fill=$(( COLUMNS - 25 - ${#__phoenix_duration} ))
+    (( fill < 0 )) && fill=0
+    __phoenix_divider="${line}${dash} · ◆ ${rst}${gold}${__phoenix_duration}${rst}${line} ◆ · ${(l:fill::─:)}${rst}"
+  else
+    __phoenix_divider="${dim}${(l:COLUMNS::─:)}${rst}"
+  fi
+}
+
+__phoenix_compose() {
+  __phoenix_render_divider
+  PROMPT=$'\n'"${__phoenix_divider}"$'\n\n'"${__phoenix_starship_prompt}"
+  __phoenix_last_set=$PROMPT
+}
+
+__phoenix_divider_precmd() {
+  [[ "$PROMPT" != "$__phoenix_last_set" ]] && __phoenix_starship_prompt=$PROMPT
   if (( ${__phoenix_skip_next_divider:-0} )); then
     __phoenix_skip_next_divider=0
+    __phoenix_last_set=$PROMPT
     return
   fi
-  local dim=$'\e[38;2;90;90;90m' r=$'\e[0m'
-  print -- "${dim}${(l:COLUMNS::─:)}${r}"
+  __phoenix_compose
 }
+
+TRAPWINCH() {
+  zle || return
+  [[ -n "$__phoenix_starship_prompt" ]] || return
+  __phoenix_compose
+  zle reset-prompt
+}
+
+zmodload zsh/datetime
+
+__phoenix_fmt_duration() {
+  local s=$1 out=
+  (( s >= 3600 )) && { out+="$(( s / 3600 ))h"; s=$(( s % 3600 )); }
+  (( s >= 60 ))   && { out+="$(( s / 60 ))m"; s=$(( s % 60 )); }
+  out+="${s}s"
+  print -r -- "$out"
+}
+__phoenix_timer_preexec() { __phoenix_timer_start=$EPOCHREALTIME }
+__phoenix_timer_precmd() {
+  __phoenix_duration=
+  [[ -n "$__phoenix_timer_start" ]] || return
+  local -F elapsed=$(( EPOCHREALTIME - __phoenix_timer_start ))
+  __phoenix_timer_start=
+  local -i secs=$(( elapsed + 0.5 ))
+  (( secs >= 2 )) && __phoenix_duration=$(__phoenix_fmt_duration $secs)
+}
+
+__phoenix_render_marker() {
+  local line=$'%{\e[38;2;71;82;98m%}' gold=$'%{\e[38;2;250;189;47m%}' rst=$'%{\e[0m%}'
+  local dash="${(l:15::─:)}"
+  if [[ -n "$__phoenix_duration" ]]; then
+    __phoenix_marker="${line}${dash} · ◆ ${rst}${gold}${__phoenix_duration}${rst}${line} ◆ · ${dash}${rst}"
+  else
+    __phoenix_marker="${line}${dash} ◆ ◆ ◆ ${dash}${rst}"
+  fi
+}
+
+__phoenix_accept_line() {
+  if [[ -n "$__phoenix_starship_prompt" ]]; then
+    __phoenix_render_marker
+    PROMPT=$'\n'"${__phoenix_marker}"$'\n\n'"${__phoenix_starship_prompt}"
+    __phoenix_last_set=$PROMPT
+    zle reset-prompt
+  fi
+  zle .accept-line
+}
+zle -N accept-line __phoenix_accept_line
+
 autoload -Uz add-zsh-hook
-add-zsh-hook precmd __phoenix_prompt_divider
+add-zsh-hook preexec __phoenix_timer_preexec
+add-zsh-hook precmd  __phoenix_timer_precmd
+add-zsh-hook precmd  __phoenix_divider_precmd
 
 __phoenix_clear_widget() {
   zle .clear-screen
-  [[ -n "$TMUX" ]] && tmux clear-history 2>/dev/null
+  [[ -n "$TMUX" ]] && { (sleep 0.1; tmux clear-history 2>/dev/null) &! }
 }
 zle -N __phoenix_clear_widget
 bindkey '^L' __phoenix_clear_widget

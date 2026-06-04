@@ -1,4 +1,4 @@
-add_newline = true
+add_newline = false
 command_timeout = 1000
 scan_timeout = 30
 
@@ -10,15 +10,9 @@ $golang\
 $dotnet\
 $directory\
 $git_branch\
-$custom\
-$fill\
-$cmd_duration\
-$time
+$custom
 
 $character"""
-
-[fill]
-symbol = " "
 
 [nodejs]
 symbol = ""
@@ -60,16 +54,7 @@ format = "[](fg:#1d2021)[ $symbol $branch ](fg:#20b2aa bg:#1d2021)[](fg:#1
 [custom.changes]
 command = "git status --porcelain 2>/dev/null | wc -l | tr -d ' '"
 when    = "git rev-parse --is-inside-work-tree >/dev/null 2>&1"
-format  = "[](fg:#1d2021)[ ± $output ](fg:#20b2aa bg:#1d2021)[](fg:#1d2021)"
-
-[cmd_duration]
-min_time = 1500
-format = "[  $duration](fg:#928374 italic)"
-
-[time]
-disabled    = false
-time_format = "%H:%M"
-format      = "[  $time ](fg:#928374)"
+format  = "[](fg:#1d2021)[ ± $output ](fg:#20b2aa bg:#1d2021)[](fg:#1d2021) "
 
 [character]
 success_symbol = "[❯](bold fg:#20b2aa)"

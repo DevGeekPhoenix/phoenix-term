@@ -35,7 +35,7 @@ One command installs everything: terminal, font, shell plugins, editor, sidebar,
 | Terminal             | Ghostty (Phoenix wallpaper, LightSeaGreen text, ComicShannsMono font)  |
 | Shell                | zsh + Oh-My-Zsh + zsh-autosuggestions + fast-syntax-highlight          |
 | Prompt               | Starship with Warp-style rounded pills                                 |
-| Multiplexer          | tmux (TPM + tmux-resurrect + tmux-continuum, auto-launches per window) |
+| Multiplexer          | tmux (TPM + tmux-resurrect + tmux-continuum) — Ghostty tabs are tmux windows; each Ghostty window is its own session |
 | Sidebar              | `phoenix-sysmon` — CPU / memory / disk / network / battery + clock     |
 | Welcome              | Per-shell figlet banner ("ANSI Shadow"), optionally pinned as a pane   |
 | Editor               | Neovim + LazyVim with the `phoenix` Black-and-Gold colorscheme         |
@@ -43,6 +43,7 @@ One command installs everything: terminal, font, shell plugins, editor, sidebar,
 | Git                  | lazygit (TUI) · gh (GitHub CLI) · git aliases                          |
 | Docker               | lazydocker (TUI for containers / images / volumes / logs)              |
 | Help                 | tldr (community man-page summaries)                                    |
+| Cheat sheet          | `phoenix-cheat` — tabbed popup of every shortcut, alias, and command   |
 | Clipboard            | `phoenix-clip` — pbcopy on macOS, wl-copy / xclip on Linux             |
 
 ---
@@ -55,23 +56,15 @@ One command installs everything: terminal, font, shell plugins, editor, sidebar,
 curl -fsSL https://raw.githubusercontent.com/DevGeekPhoenix/phoenix-term/main/bootstrap.sh | bash
 ```
 
-The bootstrap script resolves the latest GitHub Release, downloads its source tarball, unpacks it to `~/.phoenix-term`, and runs `install.sh` end-to-end. Re-running this same one-liner upgrades to the newest release (your existing install is backed up to `~/.phoenix-term.bak-<timestamp>`).
+It resolves the latest GitHub Release, unpacks it to `~/.phoenix-term`, and runs `install.sh`. Re-running the same one-liner upgrades (the old install is kept at `~/.phoenix-term.bak-<timestamp>`).
 
 ### macOS
 
-That's it. You'll click through **two macOS dialogs** mid-install: the Xcode Command Line Tools prompt (triggered by Homebrew) and Gatekeeper on first Ghostty launch. Everything else is hands-off.
+That's it. You'll click through two dialogs mid-install: the Xcode Command Line Tools prompt (triggered by Homebrew) and Gatekeeper on first Ghostty launch.
 
 ### Linux (Debian/Ubuntu and derivatives)
 
-Supported: **Ubuntu, Debian, Mint, Pop!\_OS, Kali, elementary, Zorin, Raspbian**. Architectures: **x86_64, aarch64**.
-
-If you're on a fresh box without `curl` yet:
-
-```sh
-sudo apt update && sudo apt install -y curl
-```
-
-Then run the one-liner above. The installer will `sudo` once to install apt packages; the rest stays in your home directory. **Ghostty** is best-effort on Linux — if `snap` isn't available the installer prints a warning with a manual download link.
+Supported: **Ubuntu, Debian, Mint, Pop!\_OS, Kali, elementary, Zorin, Raspbian** on **x86_64 / aarch64**. On a fresh box: `sudo apt update && sudo apt install -y curl` first. The installer `sudo`s once for apt packages; the rest stays in your home. Ghostty installs via the mkasberg `.deb` (snap fallback) — best-effort, with a manual link printed if both fail.
 
 ### Pin a specific release
 
@@ -82,29 +75,23 @@ PHOENIX_TAG=v0.1.0 \
 
 ### For developers (clone-based install)
 
-If you plan to hack on Phoenix Term itself, clone the repo so your edits are live:
-
 ```sh
 git clone https://github.com/DevGeekPhoenix/phoenix-term.git
 cd phoenix-term
 bash install.sh
 ```
 
-In a git clone, `phoenix-term update` refuses to run (it would overwrite your working tree). Use `git pull` to update; everything in the repo is symlinked into `~/`, so the change is live as soon as you reload the relevant tool.
+Configs in `~/` symlink back into the clone, so edits are live. `phoenix-term update` refuses on a clone — use `git pull`.
 
 ### What the installer does (both OSes)
 
-1. Detects your OS/distro (`detect_os` — fails fast on unsupported distros)
-2. Installs the package manager if needed (Homebrew on macOS) and every CLI tool above
-3. Installs Ghostty + ComicShannsMono Nerd Font
-4. Installs Oh-My-Zsh + the `zsh-completions` plugin
-5. Installs TPM (tmux plugin manager) and bootstraps tmux plugins
-6. Bootstraps LazyVim starter into `~/.config/nvim`
-7. Copies the `ANSI_Shadow.flf` figlet font into your `figlet` install
-8. Symlinks every config (backing up any existing file as `<path>.bak-<timestamp>`)
-9. Appends one `source <repo>/shell/phoenix.zsh` line to your `~/.zshrc`
-10. Writes default preferences to `~/.config/phoenix-term/config.zsh`
-11. On first install, offers to drop you into the interactive settings menu
+1. Detects your OS/distro — fails fast on unsupported ones — and runs preflight checks (network, disk, sudo)
+2. Installs the package manager if needed (Homebrew on macOS), every CLI tool above, Ghostty, and the ComicShannsMono Nerd Font
+3. Installs Oh-My-Zsh + `zsh-completions`, TPM, and the LazyVim starter (`~/.config/nvim`)
+4. Copies the `ANSI_Shadow.flf` figlet font into your `figlet` install
+5. Symlinks every config (existing files backed up as `<path>.bak-<timestamp>`) and appends one `source` line to `~/.zshrc`
+6. Bootstraps the tmux plugins and sets zsh as the default shell on Linux
+7. Writes default preferences to `~/.config/phoenix-term/config.zsh` — and on first install opens the settings menu so you can pick yours (`q` keeps the defaults)
 
 **Re-running `bash install.sh` is always safe** — every step is idempotent.
 
@@ -112,19 +99,21 @@ In a git clone, `phoenix-term update` refuses to run (it would overwrite your wo
 
 ## First run — what you'll see
 
-Open a new Ghostty window (or run `exec zsh`). You'll get:
+Open a new Ghostty window (or run `exec zsh`):
 
-- A figlet **welcome banner** with your name in big block letters, centered
-- A **34-column system-monitor sidebar** pinned to the right (live clock, CPU, memory, disk, network, battery)
-- A new **tmux session** automatically (one per Ghostty window — destroyed on close)
-- A **full-width divider line** above every prompt to separate command outputs
-- A **Starship prompt** with rounded pills showing your directory, git status, and exit code
+- A figlet **welcome banner** with your name, pinned across the top of every tab
+- A **tab strip** on the banner — rounded powerline pills, one per open tab (active in teal)
+- A **36-column system-monitor sidebar** on the right (live clock, CPU, memory, disk, network, battery)
+- A **tmux session per Ghostty window** — `Cmd-T` opens a tab (tmux window) inside it; a new Ghostty window gets its own independent session
+- A **full-width divider** above the active prompt (redraws on resize) that collapses to a compact `◆ ◆ ◆` marker in scrollback — past dividers can never wrap or break on resize
+- The divider/marker shows the **previous command's runtime** in gold (e.g. `─── · ◆ 2s ◆ · ───`) when it ran longer than ~1.5s
+- A **Starship prompt** with rounded pills showing directory, git status, and exit code
 
 ---
 
 ## Daily commands cheatsheet
 
-These are the commands you'll use most. All of them are zsh aliases set up by `shell/phoenix.zsh`.
+All set up by `shell/phoenix.zsh`.
 
 ### Listing files
 
@@ -207,8 +196,9 @@ These are the commands you'll use most. All of them are zsh aliases set up by `s
 
 | Command      | What it does                                 |
 | ------------ | -------------------------------------------- |
-| `tldr <cmd>` | Community man-page summary with examples     |
-| `man <cmd>`  | Real man pages — rendered with `bat` styling |
+| `tldr <cmd>`         | Community man-page summary with examples              |
+| `man <cmd>`          | Real man pages — rendered with `bat` styling         |
+| `phoenix-term cheat` | Tabbed cheat sheet popup — `Ctrl-A ?` or `Cmd-/` too |
 
 ---
 
@@ -216,33 +206,40 @@ These are the commands you'll use most. All of them are zsh aliases set up by `s
 
 ### Ghostty (terminal window)
 
-| Shortcut          | Action                            |
-| ----------------- | --------------------------------- |
-| `Cmd-T`           | New tab (new tmux session)        |
-| `Cmd-D`           | Split right within Ghostty        |
-| `Cmd-Shift-D`     | Split down within Ghostty         |
-| `Cmd-W`           | Close current pane/tab            |
-| `Cmd-Shift-Enter` | Toggle fullscreen                 |
-| `Cmd-Alt-←/→/↑/↓` | Move focus between Ghostty splits |
-| `Cmd-K`           | Clear screen                      |
+Tabs are **tmux windows** in the Ghostty window's own session — pills on the banner's tab strip, each with its own banner + sidebar.
 
-> On Linux replace `Cmd` with whatever Super/Meta key your DE uses (Ghostty's defaults work on Linux too, but your window manager may shadow some bindings).
+| Shortcut          | Action                         |
+| ----------------- | ------------------------------ |
+| `Cmd-T`           | New tab (tmux window)          |
+| `Cmd-W`           | Close current tab              |
+| `Cmd-Alt-←` / `→` | Previous / next tab            |
+| `Ctrl-1`…`Ctrl-9` | Jump to tab _N_                |
+| `Cmd-Shift-Enter` | Toggle fullscreen              |
+| `Ctrl-L`          | Clear screen + wipe tmux scrollback |
+| `Cmd-/`           | Open the cheat sheet (popup)   |
+
+> **Number keys use `Ctrl`, not `Cmd`** — macOS reserves `Cmd-1`–`Cmd-9` at the menu level, which a config file can't override. On Linux replace `Cmd` with your Super/Meta key. Pane splits live on the tmux side (`Ctrl-A |` / `Ctrl-A -`).
 
 ### Tmux — prefix is `Ctrl-A`
 
-To send any tmux command, hit `Ctrl-A` first, **release**, then the next key.
+Hit `Ctrl-A`, **release**, then the next key.
 
 | Shortcut         | Action                                             |
 | ---------------- | -------------------------------------------------- |
-| `Ctrl-A S`       | **Toggle the system-monitor sidebar**              |
-| `Ctrl-A \|`      | Split pane right                                   |
-| `Ctrl-A -`       | Split pane down                                    |
-| `Ctrl-A c`       | New tmux window                                    |
-| `Ctrl-A h/j/k/l` | Move between panes (vim-style)                     |
-| `Ctrl-A H/J/K/L` | Resize current pane                                |
-| `Ctrl-A r`       | Reload tmux config                                 |
-| `Ctrl-A [`       | Enter copy-mode (scroll + select)                  |
-| `Ctrl-A d`       | Detach from session (session keeps running)        |
+| `Ctrl-A S`            | **Toggle the system-monitor sidebar**              |
+| `Ctrl-A ?`            | **Open the cheat sheet** (tabbed popup)            |
+| `Ctrl-A \|`           | Split pane right                                   |
+| `Ctrl-A -`            | Split pane down                                    |
+| `Ctrl-A ↑/↓/←/→`      | Split pane above / below / left / right            |
+| `Ctrl-A c`            | New tab (tmux window) — same as `Cmd-T`            |
+| `Ctrl-A n` / `p`      | Next / previous tab                                |
+| `Ctrl-A 1`–`9`        | Jump to tab _N_                                    |
+| `Ctrl-A h/j/k/l`      | Move between panes (vim-style)                     |
+| `Ctrl-A Shift-↑/↓/←/→`| Move between panes (arrow-style)                   |
+| `Ctrl-A H/J/K/L`      | Resize current pane                                |
+| `Ctrl-A r`            | Reload tmux config                                 |
+| `Ctrl-A [` / `Enter`  | Enter copy-mode (scroll + select)                  |
+| `Ctrl-A d`            | Detach from session (session keeps running)        |
 | Mouse drag       | Selects in copy-mode (mouse mode is on by default) |
 
 ### Copy mode (after `Ctrl-A [`)
@@ -256,7 +253,7 @@ To send any tmux command, hit `Ctrl-A` first, **release**, then the next key.
 
 ### Neovim / LazyVim
 
-LazyVim provides hundreds of bindings; these are the ones you'll touch first:
+The ones you'll touch first (browse all with `Space s k`):
 
 | Shortcut    | Action                              |
 | ----------- | ----------------------------------- |
@@ -269,13 +266,9 @@ LazyVim provides hundreds of bindings; these are the ones you'll touch first:
 | `Space q q` | Quit                                |
 | `:Mason`    | Manage LSPs, formatters, linters    |
 
-The Phoenix Black-and-Gold colorscheme is set automatically. To browse all LazyVim keymaps: `Space s k`.
-
 ---
 
 ## The tools, one-by-one
-
-Quick reference so you know what each tool is for. The shell aliases in the [cheatsheet](#daily-commands-cheatsheet) cover the most common usage.
 
 | Tool           | What it is                                 | First command to try               |
 | -------------- | ------------------------------------------ | ---------------------------------- |
@@ -307,10 +300,10 @@ atuin import auto          # Pulls in your existing shell history
 
 ## Customize
 
-Phoenix has two layers of config:
+Two layers:
 
 1. **Persistent preferences** — `~/.config/phoenix-term/config.zsh`, managed via `phoenix-term settings`
-2. **Per-shell overrides** — export an env var in `~/.zshrc` _before_ the phoenix source line
+2. **Per-shell overrides** — export an env var in `~/.zshrc` _before_ the phoenix source line (or in your IDE's terminal env). Overrides always win over saved settings
 
 ### Available settings
 
@@ -322,32 +315,25 @@ Phoenix has two layers of config:
 | `PHOENIX_BG_MODE`       | enum | `image`       | `image` (wallpaper) or `color` (solid background)            |
 | `PHOENIX_BG_COLOR`      | text | `#0c0f11`     | Background color when `BG_MODE=color`                        |
 | `PHOENIX_NVIM_DEFAULT`  | bool | `1`           | Make `nvim` the default `$EDITOR` (also aliases `vi`/`vim`)  |
+| `PHOENIX_AUTO_TMUX`     | enum | `ghostty`     | Auto-start tmux (tabs + sysmon): `ghostty` only, `always`, or `never` |
 
-### Set them interactively
-
-```sh
-phoenix-term settings           # Drops into the numbered menu
-```
-
-### Or from the command line
+### Set them
 
 ```sh
+phoenix-term settings                              # interactive numbered menu
 phoenix-term settings --list
 phoenix-term settings --get PHOENIX_NAME
 phoenix-term settings --set PHOENIX_NAME="My Name"
 phoenix-term settings --set PHOENIX_BG_MODE=color
-phoenix-term settings --set PHOENIX_BG_COLOR=#1a1a2e
 ```
 
 ### Use your own wallpaper
-
-Drop any JPG into the repo and point at it:
 
 ```sh
 phoenix-term settings --set PHOENIX_BG=~/Pictures/my-wallpaper.jpg
 ```
 
-To re-darken an image so colors stay readable on top (the bundled wallpaper is pre-darkened to ~30 %):
+To pre-darken an image so colors stay readable (the bundled wallpaper is at ~30%):
 
 ```sh
 python3 -c "from PIL import Image, ImageEnhance; \
@@ -355,13 +341,11 @@ python3 -c "from PIL import Image, ImageEnhance; \
   ImageEnhance.Brightness(i).enhance(0.30).save('phoenix-bg.jpg','JPEG',quality=92)"
 ```
 
-After any setting change, reload Ghostty (close + reopen, or `Cmd-,` then save) for image/color changes; shell-side changes apply on the next `exec zsh`.
+Image/color changes need a Ghostty reload (close + reopen, or `Cmd-,` then save); shell-side changes apply on the next `exec zsh`.
 
 ---
 
 ## `phoenix-term` CLI
-
-The everyday wrapper that ships with the install.
 
 ```
 phoenix-term install        Run or refresh the installer (idempotent)
@@ -369,10 +353,10 @@ phoenix-term update         Fast-forward to the latest release tag and re-link
 phoenix-term check          Fetch tags and report if a newer release exists
 phoenix-term doctor         Healthcheck symlinks, packages, shell wiring
 phoenix-term version        Show the release tag this clone is on
-phoenix-term settings       Interactive preferences menu
-  phoenix-term settings --list             Print current values
-  phoenix-term settings --get KEY          Print one value
-  phoenix-term settings --set KEY=VALUE    Set one value
+phoenix-term settings       Interactive preferences menu (--list / --get KEY / --set KEY=VALUE)
+phoenix-term cheat          Open the keyboard + command cheat sheet (alias: keys)
+phoenix-term revert         Roll back to the previous install (alias: rollback)
+phoenix-term backups        List available rollback snapshots (alias: list-backups)
 phoenix-term uninstall      Remove symlinks, restore most-recent backups
 phoenix-term where          Print the repo path
 phoenix-term help           Show this help
@@ -384,93 +368,49 @@ Flags after the subcommand pass through to `install.sh`, so `phoenix-term instal
 
 ## Update
 
-Phoenix Term notifies you when a new **GitHub Release** is published (e.g. `v0.2.0`). At most once a day, a fresh interactive shell shows:
+When a new GitHub Release is published, a fresh interactive shell tells you (at most once a day, resolved in the background, no API auth):
 
 ```
 ▲ Phoenix Term: v0.1.0 → v0.2.0 — run phoenix-term update
 ```
-
-The check resolves `github.com/DevGeekPhoenix/phoenix-term/releases/latest` in the background — no API auth required.
 
 ```sh
 phoenix-term check          # Re-resolve the latest release right now
 phoenix-term update         # Download its tarball, replace install, re-run installer
 ```
 
-`phoenix-term update`:
+`phoenix-term update` resolves the latest tag via the `/releases/latest` redirect, downloads its tarball, moves the current `~/.phoenix-term` to `~/.phoenix-term.bak-<timestamp>` (kept indefinitely — see [Revert](#revert-roll-back-an-update)), extracts the new release, writes the tag to `.version`, and re-execs `install.sh`.
 
-1. Resolves the latest release tag via the redirect on `/releases/latest`
-2. Downloads `https://github.com/DevGeekPhoenix/phoenix-term/archive/refs/tags/<tag>.tar.gz`
-3. Moves your existing `~/.phoenix-term` to `~/.phoenix-term.bak-<timestamp>` (kept indefinitely — see [Revert](#revert-roll-back-an-update))
-4. Extracts the new release in place
-5. Writes the new tag to `~/.phoenix-term/.version`
-6. Re-execs `install.sh` so any new symlinks or packages get added
+**Your settings survive every update** — `~/.config/phoenix-term/config.zsh` lives outside the install dir. New settings keys appear with defaults; existing keys are never reset.
 
-### Your settings survive every update
-
-`~/.config/phoenix-term/config.zsh` — written by `phoenix-term settings` — lives **outside** the install dir. The update only touches `~/.phoenix-term`, so every preference you set (`PHOENIX_NAME`, banner mode, background image/color, …) carries forward unchanged. After an update finishes you'll see:
-
-```
-• user settings preserved → /home/you/.config/phoenix-term/config.zsh
-```
-
-If a new release adds a setting key, it appears in `phoenix-term settings --list` with its default value — your existing keys are never reset.
-
-> **Dev clones:** if `~/.phoenix-term` (or wherever you installed) is a `git clone`, `phoenix-term update` refuses — use `git pull` instead.
+> **Dev clones:** `phoenix-term update` refuses on a `git clone` — use `git pull`.
 
 ---
 
 ## Revert (roll back an update)
 
-Every `phoenix-term update` keeps the previous install at `~/.phoenix-term.bak-<timestamp>`. You can roll back with **one command**, same on macOS and Linux:
-
 ```sh
 phoenix-term revert            # or: phoenix-term rollback
 ```
 
-What it does:
-
-1. Picks the most recent `~/.phoenix-term.bak-*` directory
-2. Rotates the **current** `~/.phoenix-term` to a fresh `.bak-<now>` snapshot
-3. Moves the chosen backup into `~/.phoenix-term`
-4. Re-execs `install.sh` to refresh all symlinks against the restored files
-
-Because step 2 saves the "current" state, **a revert is itself revertable** — running `phoenix-term revert` again rolls forward to the state you just left.
-
-### See what's available to roll back to
+It picks the most recent `~/.phoenix-term.bak-*`, rotates the **current** install to a fresh `.bak-<now>` snapshot, swaps the backup in, and re-execs `install.sh` to refresh symlinks. Because the current state is snapshotted first, **a revert is itself revertable** — run it again to roll forward.
 
 ```sh
 phoenix-term backups           # or: phoenix-term list-backups
 ```
 
-Sample output:
-
 ```
-Phoenix Term — backups  (/Users/you/.phoenix-term.bak-*)
-
   #     VERSION         DATE                 PATH
   ────  ──────────────  ───────────────────  ────
   1     v0.2.0          2026-05-17 14:22:09  ~/.phoenix-term.bak-20260517142209
   2     v0.1.0          2026-05-15 09:08:41  ~/.phoenix-term.bak-20260515090841
-
-  Roll back to the most recent: phoenix-term revert
 ```
 
-### Your settings survive every revert too
+Notes:
 
-Same guarantee as updates: `~/.config/phoenix-term/config.zsh` lives outside the install dir, so rolling back to an older release doesn't undo your customizations. After a revert finishes you'll see:
-
-```
-• user settings preserved → /home/you/.config/phoenix-term/config.zsh
-```
-
-If you want to also reset a specific setting to its default while reverting, that's a separate `phoenix-term settings --set KEY=...` step.
-
-### Notes
-
-- Backups are **never auto-pruned**. If they pile up, delete the ones you don't need: `rm -rf ~/.phoenix-term.bak-<timestamp>`.
-- `phoenix-term revert` refuses on `git clone` installs — use `git reset` / `git checkout` instead.
-- The revert preserves your **personal config** (`~/.config/phoenix-term/config.zsh`) — only the install dir gets swapped.
+- Settings survive reverts the same way they survive updates — only the install dir is swapped.
+- Backups are **never auto-pruned**; delete old ones with `rm -rf ~/.phoenix-term.bak-<timestamp>`.
+- `phoenix-term revert` refuses on `git clone` installs — use `git reset` / `git checkout`.
 
 ---
 
@@ -480,16 +420,7 @@ If you want to also reset a specific setting to its default while reverting, tha
 phoenix-term doctor
 ```
 
-Reports the OS+arch it detected, then verifies:
-
-- Every symlink points at the right place in this repo
-- Every package is installed (per-OS: brew formulas/casks on macOS, apt packages + Linux extras on Debian)
-- `~/.zshrc` sources `phoenix.zsh` from **this** repo path (warns if it points at a different clone)
-- The figlet `ANSI_Shadow.flf` font is in place
-- `python3`, `nvim` are on `$PATH` and `~/.config/nvim/init.lua` exists (LazyVim)
-- (Linux only) `phoenix-clip` is present and the Nerd Font landed in `~/.local/share/fonts/`
-
-Exits non-zero if anything's wrong, so you can wire it into CI or a heartbeat.
+Reports detected OS+arch, then verifies: every symlink targets this repo · every package is installed (brew / apt + Linux extras) · `~/.zshrc` sources `phoenix.zsh` from **this** repo path · the figlet font is in place · `python3` and `nvim` are on `$PATH` with LazyVim bootstrapped · (Linux) `phoenix-clip` and the Nerd Font landed. Exits non-zero if anything's wrong, so you can wire it into CI.
 
 ---
 
@@ -499,14 +430,12 @@ Exits non-zero if anything's wrong, so you can wire it into CI or a heartbeat.
 phoenix-term uninstall
 ```
 
-What it does:
-
-- Removes every Phoenix-owned symlink under `~/.config/`, `~/.tmux.conf`, `~/.local/bin/phoenix-*`
+- Removes every Phoenix-owned symlink (`~/.config/...`, `~/.tmux.conf`, `~/.local/bin/phoenix-*`)
 - Restores the most-recent `.bak-<timestamp>` for each
-- Strips the `source <repo>/shell/phoenix.zsh` line out of `~/.zshrc`
-- **Leaves the repo, brew packages, apt packages, Oh-My-Zsh, LazyVim, and your `~/.config/phoenix-term/config.zsh` alone** — uninstall is a config rollback, not a system wipe.
+- Strips the `source .../phoenix.zsh` line from `~/.zshrc`
+- **Leaves** the repo, brew/apt packages, Oh-My-Zsh, LazyVim, and your `config.zsh` alone — it's a config rollback, not a system wipe
 
-If you want to remove the installed tools too: `brew uninstall <pkg>` on macOS, `sudo apt remove <pkg>` on Linux.
+Remove tools separately if you want: `brew uninstall <pkg>` / `sudo apt remove <pkg>`.
 
 ---
 
@@ -514,9 +443,7 @@ If you want to remove the installed tools too: `brew uninstall <pkg>` on macOS, 
 
 ### "preflight failed — fix the issues above"
 
-`install.sh` runs a set of pre-flight checks before touching anything (curl, tar, network, disk space, plus `sudo` + `apt` lock on Linux, plus "not running as root" on macOS). If you see a ✗, the line right below it tells you exactly what to do — fix it, then re-run.
-
-Common ones:
+`install.sh` checks curl, tar, network, disk space (plus `sudo` + apt lock on Linux, "not running as root" on macOS) before touching anything. The line under each ✗ says what to do — fix it and re-run.
 
 | Failure                      | Fix                                                                                                     |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------- |
@@ -529,7 +456,16 @@ Common ones:
 
 ### "command not found" after install
 
-Open a fresh shell (`exec zsh`), or open a new Ghostty window. The aliases live in `phoenix.zsh`, which only loads in zsh.
+Open a fresh shell (`exec zsh`) or a new Ghostty window — the aliases live in `phoenix.zsh`, which only loads in zsh.
+
+### Prompt icons show as `?` outside Ghostty
+
+> ⚠️ The prompt symbols (``, ``, the git branch icon) are **Nerd Font glyphs** — they only render in a terminal whose font is a patched Nerd Font. Ghostty is preconfigured; every other terminal needs its font pointed at the Phoenix font (already installed system-wide):
+>
+> - **VS Code** — `settings.json`: `"terminal.integrated.fontFamily": "ComicShannsMono Nerd Font Mono"`
+> - **Apple Terminal / iTerm2** — Settings → Profiles → Text → Font → _ComicShannsMono Nerd Font Mono_
+>
+> Confirm the font installed: `fc-list | grep -i comicshann` (Linux) or `system_profiler SPFontsDataType | grep -i comicshann` (macOS).
 
 ### Sidebar isn't showing
 
@@ -538,7 +474,7 @@ phoenix-term doctor             # Verifies the symlinks
 echo $TMUX                      # If empty, you're not in tmux yet
 ```
 
-Inside tmux, hit `Ctrl-A S` to toggle the sidebar.
+Inside tmux, `Ctrl-A S` toggles it. On hardened Linux systems, sysmon needs read access to `/proc` and `/sys`.
 
 ### Welcome banner is too tall / I don't want it
 
@@ -546,21 +482,13 @@ Inside tmux, hit `Ctrl-A S` to toggle the sidebar.
 phoenix-term settings --set PHOENIX_BANNER_STICKY=off
 ```
 
-### Sidebar doesn't update on Linux
-
-Sysmon reads `/proc` and `/sys` directly on Linux. Permission errors are rare but possible on hardened systems — re-run `phoenix-term doctor` and look for missing tools.
-
 ### Ghostty didn't install on Linux
 
-The installer tries `snap install ghostty --classic`. If snap isn't on your system, install Ghostty manually from <https://ghostty.org/download> then re-run `bash install.sh`. Everything else (font, tmux, zsh, sidebar, sysmon) works in any truecolor terminal — Alacritty, Kitty, foot, GNOME Terminal — so you can use Phoenix without Ghostty.
+The installer uses the mkasberg/ghostty-ubuntu `.deb` (the snap is sandboxed and breaks zsh launch — it's only a fallback). If both routes fail, install manually from <https://ghostty.org/download> and re-run `bash install.sh`. Everything else works in any truecolor terminal (Alacritty, Kitty, foot, GNOME Terminal), so you can use Phoenix without Ghostty.
 
-### Font looks wrong / missing icons
+### Clipboard doesn't work in tmux
 
-You need to tell your terminal to use `ComicShannsMono Nerd Font Mono`. Ghostty is set up automatically. Other terminals: set it in their preferences. Confirm the font installed with `fc-list | grep -i comicshann` (Linux) or `system_profiler SPFontsDataType | grep -i comicshann` (macOS).
-
-### Tmux still has macOS clipboard quirks
-
-`phoenix-clip` auto-detects: pbcopy on macOS, wl-copy on Wayland, xclip → xsel on X11. If your distro doesn't have any of them, install one: `sudo apt install xclip` (X11) or `sudo apt install wl-clipboard` (Wayland) — actually `bash install.sh` already does this.
+`phoenix-clip` auto-detects: pbcopy on macOS, wl-copy on Wayland, xclip → xsel on X11. The installer installs one for you; if yours is missing: `sudo apt install xclip` (X11) or `wl-clipboard` (Wayland).
 
 ---
 
@@ -586,10 +514,11 @@ phoenix-term/
 │   └── phoenix.zsh                  sourced from ~/.zshrc
 ├── bin/
 │   ├── phoenix-term                 → ~/.local/bin/phoenix-term         (everyday CLI)
+│   ├── phoenix-cheat                → ~/.local/bin/phoenix-cheat        (tabbed cheat sheet)
 │   ├── phoenix-sysmon               → ~/.local/bin/phoenix-sysmon       (sidebar dashboard)
 │   ├── phoenix-sysmon-toggle        → ~/.local/bin/phoenix-sysmon-toggle
 │   ├── phoenix-banner               → ~/.local/bin/phoenix-banner       (sticky banner pane)
-│   ├── phoenix-tmux-init             → ~/.local/bin/phoenix-tmux-init
+│   ├── phoenix-tmux-init            → ~/.local/bin/phoenix-tmux-init
 │   ├── phoenix-tmux-rebalance       → ~/.local/bin/phoenix-tmux-rebalance
 │   └── phoenix-clip                 → ~/.local/bin/phoenix-clip         (cross-platform clipboard)
 └── fonts/
@@ -603,8 +532,8 @@ Edit any file in this repo and reload the relevant tool — every config in `~/`
 ## Requirements
 
 - **macOS** (Apple Silicon or Intel) **or** **Debian/Ubuntu Linux** (x86_64 or aarch64)
-- **Internet** — the installer pulls Homebrew/apt packages, Oh-My-Zsh, TPM, LazyVim, fonts, plus official install scripts for several tools
-- **`git` + `curl`** — already on macOS (via Xcode CLT, triggered by Homebrew); on Linux: `sudo apt install git curl`
+- **Internet** — packages, Oh-My-Zsh, TPM, LazyVim, fonts, tool install scripts
+- **`git` + `curl`** — already on macOS (via Xcode CLT); on Linux: `sudo apt install git curl`
 - **`sudo` access** (Linux only — for `apt install` and `/opt/nvim*`)
 
 ---

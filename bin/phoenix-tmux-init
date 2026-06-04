@@ -1,10 +1,22 @@
 #!/usr/bin/env bash
-# Spawned by tmux's session-created hook; sets up banner pane + sysmon sidebar.
 
-set -e
-[ -n "$TMUX" ] || exit 0
+[ -n "$TMUX" ] || exec "${SHELL:-zsh}" -l
 
-[ -f "$HOME/.config/phoenix-term/config.zsh" ] && source "$HOME/.config/phoenix-term/config.zsh"
+if [ -f "$HOME/.config/phoenix-term/config.zsh" ]; then
+  __phx_pre="$(env | grep '^PHOENIX_' || true)"
+  source "$HOME/.config/phoenix-term/config.zsh"
+  __phx_nl=$'\n'
+  while IFS= read -r __phx_l; do
+    case "$__phx_l" in *=*) ;; *) continue ;; esac
+    case "${__phx_nl}${__PHOENIX_CFG_SNAP:-}${__phx_nl}" in
+      *"${__phx_nl}${__phx_l}${__phx_nl}"*) ;;
+      *) export "${__phx_l%%=*}=${__phx_l#*=}" ;;
+    esac
+  done <<EOF
+$__phx_pre
+EOF
+  unset __phx_pre __phx_nl __phx_l
+fi
 
 PHOENIX_BG_MODE_VAL="${PHOENIX_BG_MODE:-image}"
 PHOENIX_BG_COLOR_VAL="${PHOENIX_BG_COLOR:-#0c0f11}"
@@ -24,8 +36,11 @@ BANNER_HEIGHT=$(figlet -f ANSI_Shadow -w 999 "$NAME" 2>/dev/null \
 [ -z "$BANNER_HEIGHT" ] || [ "$BANNER_HEIGHT" -lt 1 ] 2>/dev/null && BANNER_HEIGHT=6
 SYSMON_WIDTH=36
 
-# Capture the main pane id BEFORE any splits — after splits, "current active
-# pane" can race with banner/sysmon's own select-pane calls.
+case "$(tmux show -gv pane-border-status 2>/dev/null)" in
+  top) BANNER_SPLIT=$((BANNER_HEIGHT + 1)) ;;
+  *) BANNER_SPLIT=$BANNER_HEIGHT ;;
+esac
+
 main_pane=$(tmux list-panes -F '#{pane_id}' | head -1)
 
 if [ "$PHOENIX_BG_MODE_VAL" = "color" ]; then
@@ -38,10 +53,8 @@ case "${PHOENIX_BANNER_STICKY:-sticky}" in
   sticky)
     existing=$(tmux list-panes -F '#{pane_id} #{pane_title}' | awk '$2=="phoenix-banner"{print $1; exit}')
     if [ -z "$existing" ]; then
-      tmux split-window -t "$main_pane" -v -b -l "$BANNER_HEIGHT" \
-        "exec $HOME/.local/bin/phoenix-banner" 2>/dev/null || true
-      banner_pane=$(tmux list-panes -F '#{pane_id} #{pane_top}' \
-                    | awk -v m="$main_pane" '$1!=m && $2=="0"{print $1; exit}')
+      banner_pane=$(tmux split-window -t "$main_pane" -v -b -l "$BANNER_SPLIT" \
+        -P -F '#{pane_id}' "exec $HOME/.local/bin/phoenix-banner" 2>/dev/null) || true
       [ -n "$banner_pane" ] && tmux select-pane -t "$banner_pane" -T phoenix-banner 2>/dev/null || true
     fi
     ;;
@@ -49,11 +62,15 @@ esac
 
 existing_sysmon=$(tmux list-panes -F '#{pane_id} #{pane_title}' | awk '$2=="phoenix-sysmon"{print $1; exit}')
 if [ -z "$existing_sysmon" ]; then
-  tmux split-window -t "$main_pane" -h -l "$SYSMON_WIDTH" \
-    "exec $HOME/.local/bin/phoenix-sysmon" 2>/dev/null || true
-  sysmon_pane=$(tmux list-panes -F '#{pane_id} #{pane_left}' \
-                | awk '$2>0 && $2!="0"{print $1; exit}')
+  sysmon_pane=$(tmux split-window -t "$main_pane" -h -l "$SYSMON_WIDTH" \
+    -P -F '#{pane_id}' "exec $HOME/.local/bin/phoenix-sysmon" 2>/dev/null) || true
   [ -n "$sysmon_pane" ] && tmux select-pane -t "$sysmon_pane" -T phoenix-sysmon 2>/dev/null || true
 fi
 
 tmux select-pane -t "$main_pane" 2>/dev/null || true
+
+if [ "${1:-}" = window ]; then
+  tmux set -gu @phoenix_launching 2>/dev/null || true
+  printf '\n'
+  exec "${SHELL:-zsh}" -l
+fi

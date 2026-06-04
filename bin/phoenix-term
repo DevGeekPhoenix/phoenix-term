@@ -38,6 +38,7 @@ case "$cmd" in
       exec bash "$INSTALL" --settings "$@"
     fi
     ;;
+  cheat|keys|cheatsheet)  exec "$(dirname "$SELF")/phoenix-cheat" "$@" ;;
   where)                  echo "$REPO" ;;
   help|-h|--help|"")
     cat <<EOF
@@ -50,6 +51,7 @@ Usage:
   phoenix-term check          Re-check whether a newer release exists
   phoenix-term revert         Roll back to the most recent backup (alias: rollback)
   phoenix-term backups        List available backups (alias: list-backups)
+  phoenix-term cheat          Open the keyboard + command cheat sheet (alias: keys)
   phoenix-term doctor         Healthcheck symlinks, packages, shell wiring
   phoenix-term version        Show the installed release tag
   phoenix-term settings       Interactive preferences menu

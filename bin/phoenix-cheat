@@ -1,0 +1,305 @@
+#!/usr/bin/env python3
+# Phoenix Term keyboard + command cheat sheet. Tabbed TUI, pure stdlib.
+
+import os, sys, select, shutil, signal, textwrap
+
+def fg(r, g, b): return f"\033[38;2;{r};{g};{b}m"
+def bg(r, g, b): return f"\033[48;2;{r};{g};{b}m"
+
+R = "\033[0m"
+B = "\033[1m"
+
+SEA   = (32, 178, 170)
+BLUE  = (17, 183, 212)
+GREEN = (0, 168, 132)
+GOLD  = (241, 177, 21)
+PINK  = (212, 110, 192)
+RED   = (227, 85, 53)
+MUTED = (120, 128, 140)
+FGCOL = (190, 198, 208)
+BGD   = (12, 15, 17)
+CHIP  = (28, 32, 39)
+
+ACCENTS = [SEA, BLUE, GREEN, GOLD, PINK, RED]
+
+# Each tab: (name, [section, ...]); each section: (title, [(keys, desc), ...]).
+TABS = [
+    ("Tmux", [
+        ("Panes", [
+            ("Ctrl-A |", "Split pane right"),
+            ("Ctrl-A -", "Split pane down"),
+            ("Ctrl-A ↑/↓/←/→", "Split above / below / left / right"),
+            ("Ctrl-A h/j/k/l", "Move between panes (vim keys)"),
+            ("Ctrl-A Shift-↑↓←→", "Move between panes (arrows)"),
+            ("Ctrl-A H/J/K/L", "Resize current pane"),
+            ("Ctrl-A z", "Zoom / un-zoom the pane"),
+        ]),
+        ("Windows / tabs", [
+            ("Ctrl-A c", "New tab (tmux window)"),
+            ("Ctrl-A n / p", "Next / previous tab"),
+            ("Ctrl-A 1–9", "Jump to tab N"),
+            ("Ctrl-A X", "Close current tab"),
+            ("Ctrl-A d", "Detach (session keeps running)"),
+        ]),
+        ("Copy mode", [
+            ("Ctrl-A [  /  Enter", "Enter copy mode (scroll + select)"),
+            ("v", "Start selection (vi keys)"),
+            ("y", "Copy to system clipboard"),
+            ("/  ?", "Search forward / backward"),
+            ("q", "Quit copy mode"),
+        ]),
+        ("Session", [
+            ("Ctrl-A S", "Toggle the system-monitor sidebar"),
+            ("Ctrl-A ?", "Open this cheat sheet"),
+            ("Ctrl-A r", "Reload tmux config"),
+            ("Mouse drag", "Select text (mouse mode is on)"),
+        ]),
+    ]),
+    ("Ghostty", [
+        ("Tabs", [
+            ("Cmd-T", "New tab (tmux window)"),
+            ("Cmd-W", "Close current tab"),
+            ("Cmd-Alt-← / →", "Previous / next tab"),
+            ("Ctrl-1…9", "Jump to tab N"),
+        ]),
+        ("Window", [
+            ("Cmd-Shift-Enter", "Toggle fullscreen"),
+            ("Ctrl-L", "Clear screen + wipe tmux scrollback"),
+            ("Cmd-/", "Open this cheat sheet"),
+        ]),
+    ]),
+    ("Shell", [
+        ("Listing files", [
+            ("ls", "List with icons (eza)"),
+            ("l  /  ll", "Long listing / + hidden + git"),
+            ("lt  /  ltt", "Tree view, 2 / 3 levels"),
+        ]),
+        ("Navigating", [
+            ("cd <dir>", "Smart cd via zoxide"),
+            ("cd <fuzzy>", "Jump to any matching dir"),
+            (".. … ….", "Up one / two / three levels"),
+            ("zi", "Interactive dir picker"),
+        ]),
+        ("Files", [
+            ("cat <file>", "Syntax-highlighted view (bat)"),
+            ("find <pat>", "Fast fd search"),
+            ("rg <pat>", "In-file search (ripgrep)"),
+            ("y", "Open yazi file manager"),
+        ]),
+        ("Git", [
+            ("g / gst", "git / git status"),
+            ("gco / gp / gl", "checkout / push / pull"),
+            ("gcm \"msg\"", "git commit -m"),
+            ("lg  /  ld", "lazygit / lazydocker TUI"),
+            ("gh", "GitHub CLI"),
+        ]),
+        ("History & search", [
+            ("Ctrl-R", "Fuzzy history search (atuin)"),
+            ("Ctrl-T", "Fuzzy file picker (fzf)"),
+            ("Alt-C", "Fuzzy dir picker (fzf)"),
+        ]),
+        ("Tmux CLI", [
+            ("ta / tn", "Attach / new named session"),
+            ("tl / tk", "List / kill session"),
+        ]),
+        ("Help", [
+            ("tldr <cmd>", "Man-page summary with examples"),
+            ("man <cmd>", "Man pages, bat-styled"),
+        ]),
+    ]),
+    ("Neovim", [
+        ("LazyVim", [
+            ("Space", "Leader — opens the LazyVim menu"),
+            ("Space f f", "Find file (fzf)"),
+            ("Space f g", "Live grep across project"),
+            ("Space e", "Toggle file-tree sidebar"),
+            ("Space g g", "Open lazygit inside nvim"),
+            ("Space l", "Lazy plugin manager"),
+            ("Space s k", "Browse all keymaps"),
+            ("Space q q", "Quit"),
+            (":Mason", "Manage LSPs / formatters / linters"),
+        ]),
+    ]),
+    ("Phoenix", [
+        ("phoenix-term", [
+            ("phoenix-term update", "Install the latest release"),
+            ("phoenix-term check", "Check for a newer release"),
+            ("phoenix-term doctor", "Healthcheck the install"),
+            ("phoenix-term settings", "Preferences menu"),
+            ("phoenix-term revert", "Roll back to the previous install"),
+            ("phoenix-term backups", "List rollback snapshots"),
+            ("phoenix-term cheat", "Open this cheat sheet"),
+        ]),
+        ("System monitor", [
+            ("Ctrl-A S", "Toggle the sidebar dashboard"),
+            ("top", "Open btop process monitor"),
+        ]),
+        ("Customize  ·  phoenix-term settings", [
+            ("PHOENIX_NAME", "Banner text"),
+            ("PHOENIX_BANNER_STICKY", "Banner: sticky / inline / off"),
+            ("PHOENIX_AUTO_TMUX", "Tabs + sidebar: ghostty / always / never"),
+            ("PHOENIX_BG_MODE", "Background: image / color"),
+        ]),
+    ]),
+]
+
+
+def chip(key, inner):
+    body = f" {key.ljust(inner - 2)} "
+    return bg(*CHIP) + fg(*FGCOL) + B + body + R, inner
+
+
+def build_card(title, rows, accent, w):
+    keyw = min(max((len(k) for k, _ in rows), default=4) + 2, max(8, w - 14))
+    descw = w - keyw - 1
+    lines = []
+    bar = f" {title.upper()}".ljust(w)
+    lines.append(bg(*accent) + fg(*BGD) + B + bar + R)
+    for key, desc in rows:
+        c, _ = chip(key, keyw)
+        wrapped = textwrap.wrap(desc, descw) or [""]
+        lines.append(c + " " + fg(*MUTED) + wrapped[0].ljust(descw) + R)
+        for cont in wrapped[1:]:
+            lines.append(" " * keyw + " " + fg(*MUTED) + cont.ljust(descw) + R)
+    return lines
+
+
+def layout(sections, w, ncols, gutter, mx):
+    cardw = (w - 2 * mx - (ncols - 1) * gutter) // ncols
+    cardw = min(cardw, 58)
+    col_y = [0] * ncols
+    placed = []
+    for i, (title, rows) in enumerate(sections):
+        lines = build_card(title, rows, ACCENTS[i % len(ACCENTS)], cardw)
+        c = col_y.index(min(col_y))
+        x = mx + 1 + c * (cardw + gutter)
+        placed.append((x, col_y[c], lines))
+        col_y[c] += len(lines) + 1
+    return placed, max(col_y)
+
+
+_state = {"maxscroll": 0}
+
+
+def render(tab, scroll):
+    W, H = shutil.get_terminal_size((100, 30))
+    out = ["\033[H\033[2J\033[?25l"]
+    mx = 2
+
+    name, sections = TABS[tab]
+    left = (f"  {fg(*SEA)}{B}Phoenix Term{R}  "
+            f"{bg(*CHIP)}{fg(*SEA)} Cheat Sheet {R}")
+    right = f"{fg(*MUTED)}phoenix-term cheat{R}  "
+    pad = max(1, W - 14 - 13 - 18 - 4)
+    out.append(f"\033[1;1H{left}{' ' * pad}{right}")
+
+    strip = "  "
+    for i, (tname, _) in enumerate(TABS):
+        if i == tab:
+            strip += bg(*SEA) + fg(*BGD) + B + f" {i + 1} {tname} " + R + " "
+        else:
+            strip += fg(*MUTED) + f" {i + 1} {tname} " + R + " "
+    out.append(f"\033[3;1H{strip}")
+
+    ctop, cbot = 5, H - 2
+    avail_w = W
+    ncols = max(1, (avail_w - 2 * mx + 2) // (44 + 2))
+    ncols = min(ncols, len(sections))
+    placed, vheight = layout(sections, avail_w, ncols, 2, mx)
+
+    view = cbot - ctop + 1
+    maxscroll = max(0, vheight - view)
+    _state["maxscroll"] = maxscroll
+    scroll = max(0, min(scroll, maxscroll))
+
+    for x, y0, lines in placed:
+        for i, line in enumerate(lines):
+            sy = ctop + y0 + i - scroll
+            if ctop <= sy <= cbot:
+                out.append(f"\033[{sy};{x}H{line}")
+
+    foot = (f"{fg(*MUTED)}  ←/→ or 1–{len(TABS)} switch tabs"
+            f"    ↑/↓ scroll" + ("  ▾" if scroll < maxscroll else "")
+            + ("  ▴" if scroll > 0 else "") + f"    q quit{R}")
+    out.append(f"\033[{H};1H{foot}")
+    sys.stdout.write("".join(out))
+    sys.stdout.flush()
+    return scroll
+
+
+def read_key(fd):
+    ch = os.read(fd, 1)
+    if ch == b"\x1b":
+        r, _, _ = select.select([fd], [], [], 0.05)
+        if r:
+            ch += os.read(fd, 2)
+    return ch.decode("utf-8", "ignore")
+
+
+def run_tui():
+    import termios, tty
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    tab, scroll = 0, 0
+    winch = [True]
+    signal.signal(signal.SIGWINCH, lambda *a: winch.__setitem__(0, True))
+    try:
+        tty.setcbreak(fd)
+        scroll = render(tab, scroll)
+        while True:
+            r, _, _ = select.select([fd], [], [], 0.25)
+            if winch[0]:
+                winch[0] = False
+                scroll = render(tab, scroll)
+            if not r:
+                continue
+            k = read_key(fd)
+            n = len(TABS)
+            if k in ("q", "\x1b", "\x03"):
+                break
+            elif k in ("\t", "l", "\x1b[C"):
+                tab, scroll = (tab + 1) % n, 0
+            elif k in ("h", "\x1b[D", "\x1b[Z"):
+                tab, scroll = (tab - 1) % n, 0
+            elif k.isdigit() and 1 <= int(k) <= n:
+                tab, scroll = int(k) - 1, 0
+            elif k in ("j", "\x1b[B"):
+                scroll = min(scroll + 1, _state["maxscroll"])
+            elif k in ("k", "\x1b[A"):
+                scroll = max(scroll - 1, 0)
+            else:
+                continue
+            scroll = render(tab, scroll)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        sys.stdout.write("\033[?25h\033[H\033[2J")
+        sys.stdout.flush()
+
+
+def print_plain():
+    for name, sections in TABS:
+        print(f"\n=== {name} ===")
+        for title, rows in sections:
+            print(f"\n  {title}")
+            kw = max((len(k) for k, _ in rows), default=4)
+            for key, desc in rows:
+                print(f"    {key.ljust(kw)}  {desc}")
+    print()
+
+
+def main():
+    args = sys.argv[1:]
+    if "--inline" not in args and os.environ.get("TMUX") and sys.stdout.isatty():
+        self = os.path.realpath(__file__)
+        os.execvp("tmux", [
+            "tmux", "display-popup", "-E", "-w", "90%", "-h", "85%",
+            f"exec '{self}' --inline",
+        ])
+    if not sys.stdout.isatty():
+        print_plain()
+        return
+    run_tui()
+
+
+if __name__ == "__main__":
+    main()

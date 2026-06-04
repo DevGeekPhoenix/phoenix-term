@@ -298,6 +298,7 @@ LINKS=(
   "bin/phoenix-sysmon|$HOME/.local/bin/phoenix-sysmon"
   "bin/phoenix-sysmon-toggle|$HOME/.local/bin/phoenix-sysmon-toggle"
   "bin/phoenix-term|$HOME/.local/bin/phoenix-term"
+  "bin/phoenix-cheat|$HOME/.local/bin/phoenix-cheat"
   "bin/phoenix-banner|$HOME/.local/bin/phoenix-banner"
   "bin/phoenix-tmux-init|$HOME/.local/bin/phoenix-tmux-init"
   "bin/phoenix-tmux-rebalance|$HOME/.local/bin/phoenix-tmux-rebalance"
@@ -656,12 +657,13 @@ install_nerd_font_linux() {
 # install of Ghostty 1.3.1 silently drops that directive — terminals fall
 # back to bash and phoenix.zsh never sources. chsh is the durable fix.
 ensure_zsh_login_shell_linux() {
-  local zsh_path
+  local zsh_path user
   zsh_path=$(command -v zsh) || { warn "zsh not on PATH — skipping default-shell change"; return 0; }
+  user="${USER:-$(id -un)}"
 
   # Read login shell from passwd, not $SHELL (lags chsh in already-running sessions).
   local login_shell
-  login_shell=$(getent passwd "$USER" 2>/dev/null | cut -d: -f7)
+  login_shell=$(getent passwd "$user" 2>/dev/null | cut -d: -f7)
   if [[ "$login_shell" == "$zsh_path" || "$login_shell" == "/bin/zsh" || "$login_shell" == "/usr/bin/zsh" ]]; then
     say "default shell is already zsh ($login_shell)"
     return 0
@@ -678,8 +680,8 @@ ensure_zsh_login_shell_linux() {
   fi
 
   say "setting default shell to zsh ($zsh_path)"
-  if (( DRY_RUN )); then dry "chsh -s $zsh_path $USER"; return 0; fi
-  if sudo_if_needed chsh -s "$zsh_path" "$USER" 2>/dev/null; then
+  if (( DRY_RUN )); then dry "chsh -s $zsh_path $user"; return 0; fi
+  if sudo_if_needed chsh -s "$zsh_path" "$user" 2>/dev/null; then
     ok_msg "default shell set to zsh — log out and back in (or reboot) to activate"
     export PHOENIX_LOGIN_SHELL_CHANGED=1
   else
@@ -854,10 +856,16 @@ do_install() {
     "$HOME/.local/bin/phoenix-sysmon" \
     "$HOME/.local/bin/phoenix-sysmon-toggle" \
     "$HOME/.local/bin/phoenix-term" \
+    "$HOME/.local/bin/phoenix-cheat" \
     "$HOME/.local/bin/phoenix-banner" \
     "$HOME/.local/bin/phoenix-tmux-init" \
     "$HOME/.local/bin/phoenix-tmux-rebalance" \
     "$HOME/.local/bin/phoenix-clip"
+
+  if [[ "$PHOENIX_OS" == "macos" && ! -e "$HOME/.hushlogin" ]]; then
+    say "silencing the Last-login message (~/.hushlogin)"
+    run touch "$HOME/.hushlogin"
+  fi
 
   ensure_zshrc_source
 
@@ -874,18 +882,21 @@ do_install() {
   [[ -f "$PHOENIX_CFG_FILE" ]] || config_was_fresh=1
   settings_ensure
 
+  if (( config_was_fresh )) && ! (( DRY_RUN )) && [[ -t 1 ]]; then
+    if [[ -t 0 ]]; then
+      printf "\n  %sFirst install — pick your preferences (q keeps the defaults).%s\n" "$DIM" "$R"
+      settings_menu
+    elif ( : </dev/tty ) 2>/dev/null; then
+      # curl | bash leaves stdin on the pipe; the menu reads the keyboard instead.
+      printf "\n  %sFirst install — pick your preferences (q keeps the defaults).%s\n" "$DIM" "$R"
+      settings_menu </dev/tty
+    fi
+  fi
+
   print_banner
   if [[ "${PHOENIX_LOGIN_SHELL_CHANGED:-0}" == "1" ]]; then
     printf "\n  %s!%s Your default shell was changed to zsh. ${SEA}Log out and back in${R}\n" "$YEL" "$R"
     printf "    (or reboot) for new terminal windows to pick it up.\n\n"
-  fi
-
-  if (( config_was_fresh )) && [[ -t 0 ]] && ! (( DRY_RUN )); then
-    printf "\n  Customize settings now? %s[y/N]%s " "$DIM" "$R"
-    local answer; read -r answer || answer=""
-    case "$answer" in
-      [yY]*) settings_menu ;;
-    esac
   fi
 }
 
@@ -896,10 +907,6 @@ ${SEA}━━━━━━━━━━━━━━━━━━━━━━━━�
 ${SEA}  Phoenix Term installed.${R}
 
   Open a new Ghostty window (or run ${SEA}exec zsh${R}) to see it live.
-
-  ${DIM}Customize:${R}
-    export PHOENIX_WELCOME=0            # skip welcome banner
-    export PHOENIX_AUTO_TMUX=0          # don't auto-launch tmux
 
   ${DIM}Tmux:${R}
     Ctrl-a S        toggle system-monitor sidebar
@@ -1311,6 +1318,7 @@ SETTINGS=(
   "PHOENIX_BG_MODE|image|enum|image: bg image with opaque banner/sysmon. color: solid color whole window|image,color"
   "PHOENIX_BG_COLOR|#0c0f11|text|Bg color (whole window when mode=color; banner/sysmon overlay when mode=image)|"
   "PHOENIX_NVIM_DEFAULT|1|bool|Make nvim the default editor (alias vi/vim, set \$EDITOR)|on/off"
+  "PHOENIX_AUTO_TMUX|ghostty|enum|Auto-start tmux (tabs + sysmon sidebar): only in Ghostty, every terminal, or never|ghostty,always,never"
 )
 
 PHOENIX_GHOSTTY_USER_CONF="$HOME/.config/ghostty/phoenix-user.conf"

@@ -3,7 +3,21 @@
 
 set -e
 
-[ -f "$HOME/.config/phoenix-term/config.zsh" ] && source "$HOME/.config/phoenix-term/config.zsh"
+if [ -f "$HOME/.config/phoenix-term/config.zsh" ]; then
+  __phx_pre="$(env | grep '^PHOENIX_' || true)"
+  source "$HOME/.config/phoenix-term/config.zsh"
+  __phx_nl=$'\n'
+  while IFS= read -r __phx_l; do
+    case "$__phx_l" in *=*) ;; *) continue ;; esac
+    case "${__phx_nl}${__PHOENIX_CFG_SNAP:-}${__phx_nl}" in
+      *"${__phx_nl}${__phx_l}${__phx_nl}"*) ;;
+      *) export "${__phx_l%%=*}=${__phx_l#*=}" ;;
+    esac
+  done <<EOF
+$__phx_pre
+EOF
+  unset __phx_pre __phx_nl __phx_l
+fi
 
 NAME="${PHOENIX_NAME:-DEV PHOENIX}"
 

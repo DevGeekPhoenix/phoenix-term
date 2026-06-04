@@ -9,6 +9,11 @@ IS_LINUX = sys.platform.startswith("linux")
 
 _cfg = os.path.expanduser("~/.config/phoenix-term/config.zsh")
 if os.path.exists(_cfg):
+    _snap = dict(
+        _l.split("=", 1)
+        for _l in os.environ.get("__PHOENIX_CFG_SNAP", "").splitlines()
+        if "=" in _l
+    )
     _line_re = re.compile(r'^\s*export\s+([A-Z_][A-Z0-9_]*)=(.*)$')
     try:
         with open(_cfg) as _f:
@@ -18,7 +23,8 @@ if os.path.exists(_cfg):
                     _k, _v = _m.group(1), _m.group(2).strip()
                     if len(_v) >= 2 and _v[0] == _v[-1] and _v[0] in ('"', "'"):
                         _v = _v[1:-1]
-                    os.environ.setdefault(_k, _v)
+                    if _k not in os.environ or os.environ[_k] == _snap.get(_k):
+                        os.environ[_k] = _v
     except OSError:
         pass
 

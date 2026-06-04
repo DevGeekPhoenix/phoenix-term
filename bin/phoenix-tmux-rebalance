@@ -4,7 +4,23 @@
 set -e
 [ -n "$TMUX" ] || exit 0
 
-[ -f "$HOME/.config/phoenix-term/config.zsh" ] && source "$HOME/.config/phoenix-term/config.zsh"
+[ "$(tmux show -gv @phoenix_launching 2>/dev/null)" = 1 ] && exit 0
+
+if [ -f "$HOME/.config/phoenix-term/config.zsh" ]; then
+  __phx_pre="$(env | grep '^PHOENIX_' || true)"
+  source "$HOME/.config/phoenix-term/config.zsh"
+  __phx_nl=$'\n'
+  while IFS= read -r __phx_l; do
+    case "$__phx_l" in *=*) ;; *) continue ;; esac
+    case "${__phx_nl}${__PHOENIX_CFG_SNAP:-}${__phx_nl}" in
+      *"${__phx_nl}${__phx_l}${__phx_nl}"*) ;;
+      *) export "${__phx_l%%=*}=${__phx_l#*=}" ;;
+    esac
+  done <<EOF
+$__phx_pre
+EOF
+  unset __phx_pre __phx_nl __phx_l
+fi
 
 NAME="${PHOENIX_NAME:-DEV PHOENIX}"
 SYSMON_WIDTH=36
@@ -15,10 +31,15 @@ BANNER_HEIGHT=$(figlet -f ANSI_Shadow -w 999 "$NAME" 2>/dev/null \
                 | tr -d ' ')
 [ -z "$BANNER_HEIGHT" ] || [ "$BANNER_HEIGHT" -lt 1 ] 2>/dev/null && BANNER_HEIGHT=6
 
+case "$(tmux show -gv pane-border-status 2>/dev/null)" in
+  top) BANNER_SPLIT=$((BANNER_HEIGHT + 1)) ;;
+  *) BANNER_SPLIT=$BANNER_HEIGHT ;;
+esac
+
 tmux list-panes -a -F '#{pane_id} #{pane_title}' 2>/dev/null \
   | while read -r pid title rest; do
       case "$title" in
-        phoenix-banner) tmux resize-pane -t "$pid" -y "$BANNER_HEIGHT" 2>/dev/null || true ;;
+        phoenix-banner) tmux resize-pane -t "$pid" -y "$BANNER_SPLIT" 2>/dev/null || true ;;
         phoenix-sysmon) tmux resize-pane -t "$pid" -x "$SYSMON_WIDTH" 2>/dev/null || true ;;
       esac
     done
