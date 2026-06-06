@@ -81,6 +81,8 @@ if command -v eza >/dev/null; then
 fi
 command -v bat     >/dev/null && alias cat='bat --paging=never --style=plain'
 command -v bat     >/dev/null && export MANPAGER="sh -c 'col -bx | bat -l man -p'"
+
+export LESS='-RFX'
 command -v fd      >/dev/null && alias find='fd'
 command -v lazygit    >/dev/null && alias lg='lazygit'
 command -v lazydocker >/dev/null && alias ld='lazydocker'
@@ -239,39 +241,41 @@ fi
 # top of an empty terminal.
 __phoenix_skip_next_divider=1
 
-__phoenix_render_divider() {
-  local dim=$'%{\e[38;2;90;90;90m%}' rst=$'%{\e[0m%}'
-  if [[ -n "$__phoenix_duration" ]]; then
-    local line=$'%{\e[38;2;71;82;98m%}' gold=$'%{\e[38;2;250;189;47m%}'
-    local dash="${(l:15::─:)}"
+__phoenix_ps1_head() {
+  (( ${__phoenix_suppress_head:-0} )) && return
+  local line=$'%{\e[38;2;71;82;98m%}' gold=$'%{\e[38;2;250;189;47m%}' rst=$'%{\e[0m%}'
+  local dash="${(l:15::─:)}" out
+  if (( ${__phoenix_marker_mode:-0} )); then
+    if [[ -n "$__phoenix_duration" ]]; then
+      out="${line}${dash} · ◆ ${rst}${gold}${__phoenix_duration}${rst}${line} ◆ · ${dash}${rst}"
+    else
+      out="${line}${dash} ◆ ◆ ◆ ${dash}${rst}"
+    fi
+  elif [[ -n "$__phoenix_duration" ]]; then
     local fill=$(( COLUMNS - 25 - ${#__phoenix_duration} ))
     (( fill < 0 )) && fill=0
-    __phoenix_divider="${line}${dash} · ◆ ${rst}${gold}${__phoenix_duration}${rst}${line} ◆ · ${(l:fill::─:)}${rst}"
+    out="${line}${dash} · ◆ ${rst}${gold}${__phoenix_duration}${rst}${line} ◆ · ${(l:fill::─:)}${rst}"
   else
-    __phoenix_divider="${dim}${(l:COLUMNS::─:)}${rst}"
+    local dim=$'%{\e[38;2;90;90;90m%}'
+    out="${dim}${(l:COLUMNS::─:)}${rst}"
   fi
-}
-
-__phoenix_compose() {
-  __phoenix_render_divider
-  PROMPT=$'\n'"${__phoenix_divider}"$'\n\n'"${__phoenix_starship_prompt}"
-  __phoenix_last_set=$PROMPT
+  print -rn -- $'\n'"${out}"$'\n\n%{%}'
 }
 
 __phoenix_divider_precmd() {
-  [[ "$PROMPT" != "$__phoenix_last_set" ]] && __phoenix_starship_prompt=$PROMPT
-  if (( ${__phoenix_skip_next_divider:-0} )); then
-    __phoenix_skip_next_divider=0
-    __phoenix_last_set=$PROMPT
-    return
-  fi
-  __phoenix_compose
+  __phoenix_marker_mode=0
+  __phoenix_suppress_head=${__phoenix_skip_next_divider:-0}
+  __phoenix_skip_next_divider=0
 }
+
+if [[ "$PROMPT" != *__phoenix_ps1_head* ]]; then
+  setopt prompt_subst
+  PROMPT='$(__phoenix_ps1_head)'"$PROMPT"
+fi
 
 TRAPWINCH() {
   zle || return
-  [[ -n "$__phoenix_starship_prompt" ]] || return
-  __phoenix_compose
+  [[ -n "$TMUX" ]] || return
   zle reset-prompt
 }
 
@@ -294,23 +298,10 @@ __phoenix_timer_precmd() {
   (( secs >= 2 )) && __phoenix_duration=$(__phoenix_fmt_duration $secs)
 }
 
-__phoenix_render_marker() {
-  local line=$'%{\e[38;2;71;82;98m%}' gold=$'%{\e[38;2;250;189;47m%}' rst=$'%{\e[0m%}'
-  local dash="${(l:15::─:)}"
-  if [[ -n "$__phoenix_duration" ]]; then
-    __phoenix_marker="${line}${dash} · ◆ ${rst}${gold}${__phoenix_duration}${rst}${line} ◆ · ${dash}${rst}"
-  else
-    __phoenix_marker="${line}${dash} ◆ ◆ ◆ ${dash}${rst}"
-  fi
-}
-
 __phoenix_accept_line() {
-  if [[ -n "$__phoenix_starship_prompt" ]]; then
-    __phoenix_render_marker
-    PROMPT=$'\n'"${__phoenix_marker}"$'\n\n'"${__phoenix_starship_prompt}"
-    __phoenix_last_set=$PROMPT
-    zle reset-prompt
-  fi
+  __phoenix_marker_mode=1
+  zle reset-prompt
+  __phoenix_marker_mode=0
   zle .accept-line
 }
 zle -N accept-line __phoenix_accept_line
