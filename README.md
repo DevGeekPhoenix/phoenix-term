@@ -104,7 +104,7 @@ Open a new Ghostty window (or run `exec zsh`):
 - A figlet **welcome banner** with your name, pinned across the top of every tab
 - A **tab strip** on the banner — rounded powerline pills, one per open tab (active in teal)
 - A **36-column system-monitor sidebar** on the right (live clock, CPU, memory, disk, network, battery)
-- A **tmux session per Ghostty window** — `Cmd-T` opens a tab (tmux window) inside it; a new Ghostty window gets its own independent session
+- A **tmux session per Ghostty window** — `Cmd-T` (mac) / `Ctrl-Shift-T` (Linux) opens a tab (tmux window) inside it; a new Ghostty window gets its own independent session
 - A **full-width divider** above the active prompt (redraws on resize) that collapses to a compact `◆ ◆ ◆` marker in scrollback — past dividers can never wrap or break on resize
 - The divider/marker shows the **previous command's runtime** in gold (e.g. `─── · ◆ 2s ◆ · ───`) when it ran longer than ~1.5s
 - A **Starship prompt** with rounded pills showing directory, git status, and exit code
@@ -198,7 +198,7 @@ All set up by `shell/phoenix.zsh`.
 | ------------ | -------------------------------------------- |
 | `tldr <cmd>`         | Community man-page summary with examples              |
 | `man <cmd>`          | Real man pages — rendered with `bat` styling         |
-| `phoenix-term cheat` | Tabbed cheat sheet popup — `Ctrl-A ?` or `Cmd-/` too |
+| `phoenix-term cheat` | Tabbed cheat sheet popup — `Ctrl-A ?`, `Cmd-/` (mac) or `Ctrl-Shift-/` (Linux) too |
 
 ---
 
@@ -208,17 +208,19 @@ All set up by `shell/phoenix.zsh`.
 
 Tabs are **tmux windows** in the Ghostty window's own session — pills on the banner's tab strip, each with its own banner + sidebar.
 
-| Shortcut          | Action                         |
-| ----------------- | ------------------------------ |
-| `Cmd-T`           | New tab (tmux window)          |
-| `Cmd-W`           | Close current tab              |
-| `Cmd-Alt-←` / `→` | Previous / next tab            |
-| `Ctrl-1`…`Ctrl-9` | Jump to tab _N_                |
-| `Cmd-Shift-Enter` | Toggle fullscreen              |
-| `Ctrl-L`          | Clear screen + wipe tmux scrollback |
-| `Cmd-/`           | Open the cheat sheet (popup)   |
+| macOS             | Linux                                  | Action                              |
+| ----------------- | -------------------------------------- | ----------------------------------- |
+| `Cmd-T`           | `Ctrl-Shift-T` / `Super-T`             | New tab (tmux window)               |
+| `Cmd-W`           | `Ctrl-Shift-W` / `Super-W`             | Close current tab                   |
+| `Cmd-Alt-←` / `→` | `Ctrl-Shift-←` / `→` · `Super-Alt-←` / `→` | Previous / next tab             |
+| `Ctrl-1`…`Ctrl-9` | `Ctrl-1`…`Ctrl-9`                      | Jump to tab _N_                     |
+| `Cmd-Shift-Enter` | `Ctrl-Shift-Enter` / `Super-Shift-Enter` | Toggle fullscreen                 |
+| `Ctrl-L`          | `Ctrl-L`                               | Clear screen + wipe tmux scrollback |
+| `Cmd-/`           | `Ctrl-Shift-/` / `Super-/`             | Open the cheat sheet (popup)        |
 
-> **Number keys use `Ctrl`, not `Cmd`** — macOS reserves `Cmd-1`–`Cmd-9` at the menu level, which a config file can't override. On Linux replace `Cmd` with your Super/Meta key. Pane splits live on the tmux side (`Ctrl-A |` / `Ctrl-A -`).
+> **Number keys use `Ctrl`, not `Cmd`** — macOS reserves `Cmd-1`–`Cmd-9` at the menu level, which a config file can't override. Pane splits live on the tmux side (`Ctrl-A |` / `Ctrl-A -`).
+>
+> **Linux gets both sets.** The `Super` combos mirror the mac muscle memory and work wherever your desktop environment hasn't claimed the combo for window management (DEs grab `Super` keys at the compositor level, before Ghostty sees them — which combos are free varies per DE). The `Ctrl-Shift` set always works. The cheat sheet (`Ctrl-A ?`) checks your DE settings and lists only the `Super` variants that are actually free, and `phoenix-term doctor` flags any desktop shortcut shadowing a Phoenix keybind.
 
 ### Tmux — prefix is `Ctrl-A`
 
@@ -421,6 +423,8 @@ phoenix-term doctor
 ```
 
 Reports detected OS+arch, then verifies: every symlink targets this repo · every package is installed (brew / apt + Linux extras) · `~/.zshrc` sources `phoenix.zsh` from **this** repo path · the figlet font is in place · `python3` and `nvim` are on `$PATH` with LazyVim bootstrapped · (Linux) `phoenix-clip` and the Nerd Font landed. Exits non-zero if anything's wrong, so you can wire it into CI.
+
+On Linux it also scans your desktop environment's keyboard shortcuts (GNOME/Cinnamon via `gsettings`/`dconf`, KDE, Xfce) and lists any that shadow a Phoenix keybind — the answer to "why does `Super-Alt-→` do nothing". These are warnings, not failures: rebind or remove them in your DE's keyboard settings, or just use the `Ctrl-Shift` set.
 
 ---
 
