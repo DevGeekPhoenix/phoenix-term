@@ -4,7 +4,7 @@ A complete, opinionated terminal stack for **macOS and Debian/Ubuntu Linux** —
 
 One command installs everything: terminal, font, shell plugins, editor, sidebar, and ~18 modern CLI tools.
 
-![](assets/images/image-20260520-235529-vdng.png)
+![Phoenix Term](assets/images/image.png)
 
 ---
 
