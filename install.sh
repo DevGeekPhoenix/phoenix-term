@@ -973,6 +973,44 @@ do_uninstall() {
 
 # ---------- doctor ----------
 
+# Linux only: DE-level shortcut grabs (compositor wins over Ghostty keybinds).
+doctor_de_shortcuts() {
+  printf "\n%sDE shortcut grabs%s\n" "$DIM" "$R"
+  local hits=0 line src tag gs="" xf=""
+  local keys='(t|w|left|right|return|enter|slash|question)'
+  local end="('|\"|,|[[:space:]]|$)"
+  if command -v gsettings >/dev/null 2>&1; then
+    gs=$(gsettings list-recursively 2>/dev/null || true)
+  fi
+  if command -v dconf >/dev/null 2>&1; then
+    gs+=$'\n'$(dconf dump / 2>/dev/null | grep -iE '<(control|ctrl|primary|super)>' || true)
+  fi
+  if command -v xfconf-query >/dev/null 2>&1; then
+    xf=$(xfconf-query -c xfce4-keyboard-shortcuts -lv 2>/dev/null || true)
+  fi
+  local start="(^|'|\"|=|,|/|\[|[[:space:]])"
+  local cs="(<(control|ctrl|primary)><shift>|<shift><(control|ctrl|primary)>)"
+  for tag in gnome xfce; do
+    if [[ "$tag" == gnome ]]; then src="$gs"; else src="$xf"; fi
+    while IFS= read -r line; do
+      if [[ -n "$line" ]]; then bad "$tag: $line"; hits=1; fi
+    done < <({ grep -iE "${start}${cs}${keys}${end}" <<<"$src" || true; \
+               grep -iE "${start}<(control|ctrl|primary)>[1-9]${end}" <<<"$src" || true; \
+               grep -iE "${start}(<super><alt>|<alt><super>)(left|right)${end}" <<<"$src" || true; \
+               grep -iE "${start}(<super><shift>|<shift><super>)return${end}" <<<"$src" || true; \
+               grep -iE "${start}<super>(t|w|slash)${end}" <<<"$src" || true; } | sort -u)
+  done
+  while IFS= read -r line; do
+    if [[ -n "$line" ]]; then bad "kde: $line"; hits=1; fi
+  done < <(grep -iE "=[^,=]*(ctrl\+shift\+${keys}|ctrl\+[1-9]\b|meta\+(t|w|slash|/)(,|$)|meta\+alt\+(left|right)\b|meta\+shift\+(return|enter)\b)" \
+           "$HOME/.config/kglobalshortcutsrc" 2>/dev/null | grep -viE '=none' || true)
+  if (( hits )); then
+    warn "these desktop shortcuts intercept Phoenix keybinds (Ctrl+Shift mirrors, Ctrl+1–9, Super+T/W, Super+Alt+←/→, Super+Shift+Enter, Super+/) before Ghostty sees them — rebind or remove them in your DE keyboard settings"
+  else
+    ok "no desktop shortcuts shadow the Phoenix keybinds"
+  fi
+}
+
 do_doctor() {
   detect_os
   local fail=0
@@ -1039,6 +1077,7 @@ do_doctor() {
       fi
       if command -v ghostty >/dev/null; then ok "ghostty ($(command -v ghostty))"
       else bad "ghostty not in PATH — install manually if needed"; fail=1; fi
+      doctor_de_shortcuts
       ;;
   esac
 

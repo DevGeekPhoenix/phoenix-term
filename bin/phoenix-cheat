@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Phoenix Term keyboard + command cheat sheet. Tabbed TUI, pure stdlib.
 
-import os, sys, select, shutil, signal, textwrap
+import os, re, sys, select, shutil, signal, textwrap
 
 def fg(r, g, b): return f"\033[38;2;{r};{g};{b}m"
 def bg(r, g, b): return f"\033[48;2;{r};{g};{b}m"
@@ -21,6 +21,47 @@ BGD   = (12, 15, 17)
 CHIP  = (28, 32, 39)
 
 ACCENTS = [SEA, BLUE, GREEN, GOLD, PINK, RED]
+
+IS_MACOS = sys.platform == "darwin"
+
+def k(mac, linux): return mac if IS_MACOS else linux
+
+# Linux: Super keybinds only work when the DE hasn't grabbed the combo, so the
+# sheet probes the DE config and advertises them only when verified free.
+def _de_grabs():
+    if IS_MACOS:
+        return None
+    import subprocess
+    txt = []
+    for cmd in (("gsettings", "list-recursively"),
+                ("dconf", "dump", "/"),
+                ("xfconf-query", "-c", "xfce4-keyboard-shortcuts", "-lv")):
+        try:
+            txt.append(subprocess.run(cmd, capture_output=True, text=True, timeout=3).stdout)
+        except Exception:
+            pass
+    try:
+        with open(os.path.expanduser("~/.config/kglobalshortcutsrc")) as f:
+            txt.append("".join(l for l in f if "=none" not in l.lower()))
+    except OSError:
+        pass
+    return "\n".join(txt).lower()
+
+_GRABS = _de_grabs()
+
+_START = r"(^|['\"=,/\[\s])"
+
+def _super_free(gtk, kde):
+    if not _GRABS:
+        return False
+    return not (re.search(_START + gtk, _GRABS, re.M) or re.search(kde, _GRABS, re.M))
+
+SUP_T     = _super_free(r"<super>t\b", r"meta\+t\b")
+SUP_W     = _super_free(r"<super>w\b", r"meta\+w\b")
+SUP_NAV   = (_super_free(r"(<super><alt>|<alt><super>)left\b", r"meta\+alt\+left\b")
+             and _super_free(r"(<super><alt>|<alt><super>)right\b", r"meta\+alt\+right\b"))
+SUP_FS    = _super_free(r"(<super><shift>|<shift><super>)return\b", r"meta\+shift\+(return|enter)\b")
+SUP_CHEAT = _super_free(r"<super>slash\b", r"meta\+(slash|/)")
 
 # Each tab: (name, [section, ...]); each section: (title, [(keys, desc), ...]).
 TABS = [
@@ -57,15 +98,20 @@ TABS = [
     ]),
     ("Ghostty", [
         ("Tabs", [
-            ("Cmd-T", "New tab (tmux window)"),
-            ("Cmd-W", "Close current tab"),
-            ("Cmd-Alt-← / →", "Previous / next tab"),
+            (k("Cmd-T", "Ctrl-Shift-T"),
+             "New tab (tmux window)" + (" · or Super-T" if SUP_T else "")),
+            (k("Cmd-W", "Ctrl-Shift-W"),
+             "Close current tab" + (" · or Super-W" if SUP_W else "")),
+            (k("Cmd-Alt-← / →", "Ctrl-Shift-← / →"),
+             "Previous / next tab" + (" · or Super-Alt-←/→" if SUP_NAV else "")),
             ("Ctrl-1…9", "Jump to tab N"),
         ]),
         ("Window", [
-            ("Cmd-Shift-Enter", "Toggle fullscreen"),
+            (k("Cmd-Shift-Enter", "Ctrl-Shift-Enter"),
+             "Toggle fullscreen" + (" · or Super-Shift-Enter" if SUP_FS else "")),
             ("Ctrl-L", "Clear screen + wipe tmux scrollback"),
-            ("Cmd-/", "Open this cheat sheet"),
+            (k("Cmd-/", "Ctrl-Shift-/"),
+             "Open this cheat sheet" + (" · or Super-/" if SUP_CHEAT else "")),
         ]),
     ]),
     ("Shell", [
