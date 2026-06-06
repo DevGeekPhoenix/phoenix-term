@@ -81,8 +81,6 @@ if command -v eza >/dev/null; then
 fi
 command -v bat     >/dev/null && alias cat='bat --paging=never --style=plain'
 command -v bat     >/dev/null && export MANPAGER="sh -c 'col -bx | bat -l man -p'"
-
-export LESS='-RFX'
 command -v fd      >/dev/null && alias find='fd'
 command -v lazygit    >/dev/null && alias lg='lazygit'
 command -v lazydocker >/dev/null && alias ld='lazydocker'
