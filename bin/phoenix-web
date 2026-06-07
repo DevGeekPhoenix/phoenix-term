@@ -226,6 +226,7 @@ def run_tui(mode):
 
     try:
         tty.setcbreak(fd)
+        dirty = True
         while True:
             all_rows = (links_rows(links) if mode == "links"
                         else [(f"localhost:{p}", proc) for p, proc in servers])
@@ -239,11 +240,20 @@ def run_tui(mode):
             sel = max(0, min(sel, n - 1)) if n else 0
             if winch[0]:
                 winch[0] = False
-            scroll = render(mode, rows, sel, scroll, empty, query, typing)
+                dirty = True
+            # Render only when something changed — redrawing every tick
+            # full-screen-clears the terminal and looks like an infinite loop
+            # outside a tmux popup.
+            if dirty:
+                scroll = render(mode, rows, sel, scroll, empty, query, typing)
+                dirty = False
             r, _, _ = select.select([fd], [], [], 0.25)
             if not r:
                 continue
             k = read_key(fd)
+            if not k:
+                break
+            dirty = True
             if typing:
                 if k == "\x1b":
                     query, typing = "", False
