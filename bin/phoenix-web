@@ -1,0 +1,367 @@
+#!/usr/bin/env python3
+# phoenix-web — open URLs, manage saved links, and launch local dev servers
+# from a cheat-style tmux popup.
+
+import os
+import re
+import select
+import shutil
+import signal
+import subprocess
+import sys
+import termios
+import tty
+
+SEA = (32, 178, 170)
+MUTED = (71, 82, 98)
+DIM = (120, 120, 120)
+GOLD = (250, 189, 47)
+CHIP = (28, 32, 39)
+BGD = (12, 15, 17)
+B = "\033[1m"
+R = "\033[0m"
+
+
+def fg(r, g, b):
+    return f"\033[38;2;{r};{g};{b}m"
+
+
+def bg(r, g, b):
+    return f"\033[48;2;{r};{g};{b}m"
+
+
+SELF = os.path.realpath(__file__)
+LIST_FILE = os.path.expanduser("~/.config/phoenix-term/web-list")
+SUBCMDS = {"dev", "list", "ls", "help", "-h", "--help"}
+
+
+def normalize(url):
+    if re.match(r"^(https?|file)://", url):
+        return url
+    return "https://" + url
+
+
+def clean_name(name):
+    return re.sub(r"\s+", "-", name.strip())
+
+
+def open_url(url):
+    opener = ["open"] if sys.platform == "darwin" else ["xdg-open"]
+    if sys.platform != "darwin" and not shutil.which("xdg-open"):
+        print("phoenix-web: xdg-open not found — install xdg-utils", file=sys.stderr)
+        sys.exit(1)
+    subprocess.Popen(opener + [url], stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def load_links():
+    links = []
+    if os.path.isfile(LIST_FILE):
+        with open(LIST_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                url, _, name = (p.strip() for p in line.partition("|"))
+                if url:
+                    links.append((url, clean_name(name)))
+    return links
+
+
+def save_links(links):
+    os.makedirs(os.path.dirname(LIST_FILE), exist_ok=True)
+    with open(LIST_FILE, "w") as f:
+        f.write("# Phoenix Term — saved links (web add <url> [name], or edit here)\n")
+        for url, name in links:
+            f.write(f"{url} | {name}\n" if name else f"{url}\n")
+
+
+def find_link(links, key):
+    if key.isdigit() and 1 <= int(key) <= len(links):
+        return int(key) - 1
+    keys = {key, clean_name(key)}
+    for i, (url, name) in enumerate(links):
+        if keys & {url, name} or normalize(key) == url:
+            return i
+    for i, (url, name) in enumerate(links):
+        if name and name.lower().startswith(clean_name(key).lower()):
+            return i
+    return None
+
+
+def scan_dev_servers():
+    found = {}
+    try:
+        if sys.platform == "darwin":
+            out = subprocess.run(["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"],
+                                 capture_output=True, text=True, timeout=8).stdout
+            for line in out.splitlines()[1:]:
+                parts = line.split()
+                if len(parts) < 9:
+                    continue
+                m = re.search(r":(\d+)$", parts[8])
+                if m:
+                    found.setdefault(int(m.group(1)), set()).add(parts[0])
+        else:
+            cmd = ["ss", "-tlnp"] if shutil.which("ss") else ["netstat", "-tlnp"]
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=8).stdout
+            for line in out.splitlines()[1:]:
+                parts = line.split()
+                addr = next((p for p in parts if re.search(r":\d+$", p)), "")
+                m = re.search(r":(\d+)$", addr)
+                if not m:
+                    continue
+                proc = re.search(r'"([^"]+)"', line)
+                found.setdefault(int(m.group(1)), set()).add(
+                    proc.group(1) if proc else "?")
+    except Exception:
+        pass
+    return [(port, " ".join(sorted(procs))) for port, procs in sorted(found.items())]
+
+
+_state = {"maxscroll": 0}
+
+
+def visible_len(s):
+    return len(re.sub(r"\033\[[0-9;]*m", "", s))
+
+
+def render(mode, rows, sel, scroll, empty_msg, query="", typing=False):
+    W, H = shutil.get_terminal_size((100, 30))
+    out = ["\033[H\033[2J\033[?25l"]
+    chip = " Web " if mode == "links" else " Dev Servers "
+    left = f"  {fg(*SEA)}{B}Phoenix Term{R}  {bg(*CHIP)}{fg(*SEA)}{chip}{R}"
+    right = f"{fg(*MUTED)}web{R}  "
+    out.append(f"\033[1;1H{left}{' ' * max(1, W - visible_len(left) - 5)}{right}")
+
+    ctop, cbot = 3, H - 2
+    view = cbot - ctop + 1
+    maxscroll = max(0, len(rows) - view)
+    _state["maxscroll"] = maxscroll
+    scroll = max(0, min(scroll, maxscroll))
+    if sel < scroll:
+        scroll = sel
+    if sel >= scroll + view:
+        scroll = sel - view + 1
+
+    if not rows:
+        msg = f"no matches for /{query}" if query else empty_msg
+        out.append(f"\033[{ctop + 1};5H{fg(*DIM)}{msg}{R}")
+    for i in range(view):
+        idx = scroll + i
+        if idx >= len(rows):
+            break
+        label, detail = rows[idx]
+        num = f"{idx + 1:>2}"
+        if idx == sel:
+            line = (f"{bg(*CHIP)}{fg(*GOLD)} {num} {R}{bg(*CHIP)}{fg(*SEA)}{B} "
+                    f"{label:<28}{R}{bg(*CHIP)}{fg(*DIM)} {detail} {R}")
+        else:
+            line = (f"{fg(*MUTED)} {num} {R} {fg(*SEA)}{label:<28}{R}"
+                    f"{fg(*MUTED)} {detail}{R}")
+        out.append(f"\033[{ctop + i};3H{line[:W * 4]}")
+
+    if typing:
+        foot = (f"  {fg(*GOLD)}/{query}▌{R}  "
+                f"{fg(*MUTED)}type to filter · Enter done · Esc clear · ↑/↓ move{R}")
+    else:
+        flt = f"{fg(*GOLD)} /{query} {R} ·" if query else ""
+        if mode == "links":
+            foot = (f"{flt}{fg(*MUTED)}  ↑/↓ move   Enter/1-9 open   / search"
+                    f"   a add   e edit   d delete   q quit{R}")
+        else:
+            foot = (f"{flt}{fg(*MUTED)}  ↑/↓ move   Enter/1-9 open   / search"
+                    f"   r rescan   q quit{R}")
+    out.append(f"\033[{H};1H{foot}")
+    sys.stdout.write("".join(out))
+    sys.stdout.flush()
+    return scroll
+
+
+def read_key(fd):
+    ch = os.read(fd, 1)
+    if ch == b"\x1b":
+        r, _, _ = select.select([fd], [], [], 0.05)
+        if r:
+            ch += os.read(fd, 2)
+    return ch.decode("utf-8", "ignore")
+
+
+def prompt_line(fd, old, label, prefill_note=""):
+    H = shutil.get_terminal_size((100, 30))[1]
+    termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    note = f"{fg(*DIM)}{prefill_note}{R} " if prefill_note else ""
+    sys.stdout.write(f"\033[{H};1H\033[2K\033[?25h  {fg(*GOLD)}{label}{R} {note}")
+    sys.stdout.flush()
+    try:
+        val = input().strip()
+    except (EOFError, KeyboardInterrupt):
+        val = ""
+    tty.setcbreak(fd)
+    sys.stdout.write("\033[?25l")
+    return val
+
+
+def links_rows(links):
+    return [(name or url, url if name else "") for url, name in links]
+
+
+def run_tui(mode):
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    winch = [True]
+    signal.signal(signal.SIGWINCH, lambda *a: winch.__setitem__(0, True))
+    links = load_links() if mode == "links" else []
+    servers = scan_dev_servers() if mode == "dev" else []
+    sel, scroll = 0, 0
+    query, typing = "", False
+    empty = ("no saved links yet — press a to add"
+             if mode == "links" else "no listening localhost servers found")
+
+    def open_row(real):
+        if mode == "links":
+            open_url(links[real][0])
+        else:
+            open_url(f"http://localhost:{servers[real][0]}")
+
+    try:
+        tty.setcbreak(fd)
+        while True:
+            all_rows = (links_rows(links) if mode == "links"
+                        else [(f"localhost:{p}", proc) for p, proc in servers])
+            if query:
+                idx_map = [i for i, (lab, det) in enumerate(all_rows)
+                           if query.lower() in f"{lab} {det}".lower()]
+            else:
+                idx_map = list(range(len(all_rows)))
+            rows = [all_rows[i] for i in idx_map]
+            n = len(rows)
+            sel = max(0, min(sel, n - 1)) if n else 0
+            if winch[0]:
+                winch[0] = False
+            scroll = render(mode, rows, sel, scroll, empty, query, typing)
+            r, _, _ = select.select([fd], [], [], 0.25)
+            if not r:
+                continue
+            k = read_key(fd)
+            if typing:
+                if k == "\x1b":
+                    query, typing = "", False
+                elif k in ("\r", "\n"):
+                    typing = False
+                elif k in ("\x7f", "\x08"):
+                    query = query[:-1]
+                elif k == "\x1b[B":
+                    sel = min(sel + 1, max(0, n - 1))
+                elif k == "\x1b[A":
+                    sel = max(sel - 1, 0)
+                elif len(k) == 1 and k.isprintable():
+                    query += k
+                    sel = 0
+                continue
+            if k == "q" or k == "\x03" or (k == "\x1b" and not query):
+                break
+            elif k == "\x1b":
+                query = ""
+            elif k == "/":
+                query, typing, sel = "", True, 0
+            elif k in ("j", "\x1b[B"):
+                sel = min(sel + 1, max(0, n - 1))
+            elif k in ("k", "\x1b[A"):
+                sel = max(sel - 1, 0)
+            elif k == "g":
+                sel = 0
+            elif k == "G":
+                sel = max(0, n - 1)
+            elif k in ("\r", "\n") and n:
+                open_row(idx_map[sel])
+                break
+            elif k.isdigit() and 1 <= int(k) <= min(n, 9):
+                open_row(idx_map[int(k) - 1])
+                break
+            elif mode == "dev" and k == "r":
+                servers = scan_dev_servers()
+            elif mode == "links" and k == "a":
+                url = prompt_line(fd, old, "url:")
+                if url:
+                    name = prompt_line(fd, old, "name (optional):")
+                    links.append((normalize(url), clean_name(name)))
+                    save_links(links)
+                    query, sel = "", len(links) - 1
+            elif mode == "links" and k == "e" and n:
+                real = idx_map[sel]
+                cur_url, cur_name = links[real]
+                url = prompt_line(fd, old, "url:", f"(Enter keeps {cur_url})")
+                name = prompt_line(fd, old, "name:", f"(Enter keeps '{cur_name}')")
+                links[real] = (normalize(url) if url else cur_url,
+                               clean_name(name) if name else cur_name)
+                save_links(links)
+            elif mode == "links" and k in ("d", "x") and n:
+                real = idx_map[sel]
+                label = links[real][1] or links[real][0]
+                if prompt_line(fd, old, f"delete {label}? y/N").lower() == "y":
+                    links.pop(real)
+                    save_links(links)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        sys.stdout.write("\033[?25h\033[H\033[2J")
+        sys.stdout.flush()
+
+
+def popup_or_inline(mode):
+    if os.environ.get("TMUX") and sys.stdout.isatty():
+        arg = " dev" if mode == "dev" else ""
+        os.execvp("tmux", [
+            "tmux", "display-popup", "-E", "-w", "70%", "-h", "70%",
+            f"exec '{SELF}' --inline{arg}",
+        ])
+    if sys.stdout.isatty() and sys.stdin.isatty():
+        run_tui(mode)
+    elif mode == "links":
+        for i, (url, name) in enumerate(load_links(), 1):
+            print(f"{i}\t{name or '-'}\t{url}")
+    else:
+        for port, proc in scan_dev_servers():
+            print(f"localhost:{port}\t{proc}")
+
+
+def usage():
+    print("""web — Phoenix browser launcher
+
+  web         popup of your saved links — Enter opens, a add, e edit, d delete
+  web <url>   open a URL in your default browser
+  web <name>  open a saved link by name
+  web dev     popup of running localhost servers""")
+
+
+def main():
+    args = sys.argv[1:]
+    inline = "--inline" in args
+    args = [a for a in args if a != "--inline"]
+    cmd = args[0] if args else ""
+
+    if not cmd or cmd == "links":
+        run_tui("links") if inline else popup_or_inline("links")
+    elif cmd == "dev":
+        run_tui("dev") if inline else popup_or_inline("dev")
+    elif cmd in ("list", "ls"):
+        for i, (url, name) in enumerate(load_links(), 1):
+            print(f"{i}\t{name or '-'}\t{url}")
+    elif cmd in ("help", "-h", "--help"):
+        usage()
+    else:
+        key = " ".join(args)
+        links = load_links()
+        i = find_link(links, key)
+        if i is not None and "." not in key and "://" not in key:
+            open_url(links[i][0])
+        elif "." in key or "://" in key or key.startswith("localhost"):
+            open_url(normalize(key))
+        else:
+            print(f"web: '{key}' is not a URL, subcommand, or saved link", file=sys.stderr)
+            usage()
+            sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()

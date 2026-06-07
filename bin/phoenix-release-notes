@@ -1,0 +1,245 @@
+#!/usr/bin/env python3
+# Phoenix Term release notes — fetched from GitHub, paged in a cheat-style popup TUI.
+
+import json
+import os
+import re
+import select
+import shutil
+import signal
+import subprocess
+import sys
+import termios
+import textwrap
+import tty
+import urllib.request
+
+SEA = (32, 178, 170)
+MUTED = (71, 82, 98)
+DIM = (120, 120, 120)
+CHIP = (28, 32, 39)
+B = "\033[1m"
+R = "\033[0m"
+
+
+def fg(r, g, b):
+    return f"\033[38;2;{r};{g};{b}m"
+
+
+def bg(r, g, b):
+    return f"\033[48;2;{r};{g};{b}m"
+
+
+SELF = os.path.realpath(__file__)
+REPO = os.path.dirname(os.path.dirname(SELF))
+GH_REPO = os.environ.get("PHOENIX_GH_REPO", "DevGeekPhoenix/phoenix-term")
+
+
+def installed_tag():
+    vf = os.path.join(REPO, ".version")
+    if os.path.isfile(vf):
+        with open(vf) as f:
+            t = f.readline().strip()
+        if t:
+            return t
+    if os.path.isdir(os.path.join(REPO, ".git")):
+        try:
+            p = subprocess.run(
+                ["git", "-C", REPO, "describe", "--tags", "--abbrev=0", "HEAD"],
+                capture_output=True, text=True, timeout=5)
+            return p.stdout.strip() or None
+        except Exception:
+            return None
+    return None
+
+
+def latest_tag():
+    try:
+        with urllib.request.urlopen(
+                f"https://github.com/{GH_REPO}/releases/latest", timeout=8) as r:
+            url = r.geturl()
+        if "/tag/" in url:
+            return url.rsplit("/tag/", 1)[1]
+    except Exception:
+        pass
+    return None
+
+
+def fetch_release(tag):
+    req = urllib.request.Request(
+        f"https://api.github.com/repos/{GH_REPO}/releases/tags/{tag}",
+        headers={"User-Agent": "phoenix-term"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.load(r)
+
+
+def render_md(text):
+    bat = shutil.which("bat") or os.path.expanduser("~/.local/bin/bat")
+    if bat and os.access(bat, os.X_OK):
+        try:
+            p = subprocess.run(
+                [bat, "-l", "md", "--style=plain", "--color=always", "--paging=never"],
+                input=text, capture_output=True, text=True, timeout=10)
+            if p.returncode == 0:
+                return p.stdout
+        except Exception:
+            pass
+    return text
+
+
+def build_lines(rel, tag, width):
+    body = rel.get("body") or "_(no release notes)_"
+    wrapped = []
+    for raw in body.splitlines():
+        if len(raw) > width:
+            wrapped.extend(textwrap.wrap(
+                raw, width, subsequent_indent="  ",
+                break_long_words=False, break_on_hyphens=False) or [""])
+        else:
+            wrapped.append(raw)
+    rendered = render_md("\n".join(wrapped)).splitlines()
+
+    name = rel.get("name") or ""
+    date = (rel.get("published_at") or "")[:10]
+    head = f"{fg(*SEA)}{B}Phoenix Term {tag}{R}"
+    if name and name != tag:
+        head += f"  {fg(*DIM)}—  {name}{R}"
+    lines = [head]
+    if date:
+        lines.append(f"{fg(*DIM)}released {date}{R}")
+    lines.append(f"{fg(*MUTED)}{'─' * min(width, 70)}{R}")
+    lines.append("")
+    lines.extend(rendered)
+    lines.append("")
+    lines.append(f"{fg(*DIM)}https://github.com/{GH_REPO}/releases/tag/{tag}{R}")
+    return lines
+
+
+_state = {"maxscroll": 0}
+
+
+def render(lines, scroll):
+    W, H = shutil.get_terminal_size((100, 30))
+    out = ["\033[H\033[2J\033[?25l"]
+    left = (f"  {fg(*SEA)}{B}Phoenix Term{R}  "
+            f"{bg(*CHIP)}{fg(*SEA)} What's New {R}")
+    right = f"{fg(*MUTED)}phoenix-term notes{R}  "
+    pad = max(1, W - 14 - 12 - 20 - 4)
+    out.append(f"\033[1;1H{left}{' ' * pad}{right}")
+
+    ctop, cbot = 3, H - 2
+    view = cbot - ctop + 1
+    maxscroll = max(0, len(lines) - view)
+    _state["maxscroll"] = maxscroll
+    scroll = max(0, min(scroll, maxscroll))
+
+    for i in range(view):
+        idx = scroll + i
+        if idx < len(lines):
+            out.append(f"\033[{ctop + i};3H{lines[idx]}")
+
+    foot = (f"{fg(*MUTED)}  ↑/↓ scroll"
+            + ("  ▾" if scroll < maxscroll else "")
+            + ("  ▴" if scroll > 0 else "") + f"    q quit{R}")
+    out.append(f"\033[{H};1H{foot}")
+    sys.stdout.write("".join(out))
+    sys.stdout.flush()
+    return scroll
+
+
+def read_key(fd):
+    ch = os.read(fd, 1)
+    if ch == b"\x1b":
+        r, _, _ = select.select([fd], [], [], 0.05)
+        if r:
+            ch += os.read(fd, 2)
+    return ch.decode("utf-8", "ignore")
+
+
+def run_tui(rel, tag):
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    winch = [True]
+    signal.signal(signal.SIGWINCH, lambda *a: winch.__setitem__(0, True))
+    lines, scroll = [], 0
+    try:
+        tty.setcbreak(fd)
+        while True:
+            if winch[0]:
+                winch[0] = False
+                W, _ = shutil.get_terminal_size((100, 30))
+                lines = build_lines(rel, tag, max(40, W - 6))
+                scroll = render(lines, scroll)
+            r, _, _ = select.select([fd], [], [], 0.25)
+            if not r:
+                continue
+            k = read_key(fd)
+            view = shutil.get_terminal_size((100, 30))[1] - 4
+            if k in ("q", "\x1b", "\x03"):
+                break
+            elif k in ("j", "\x1b[B"):
+                scroll = min(scroll + 1, _state["maxscroll"])
+            elif k in ("k", "\x1b[A"):
+                scroll = max(scroll - 1, 0)
+            elif k in (" ", "\x1b[6"):
+                scroll = min(scroll + view, _state["maxscroll"])
+            elif k in ("b", "\x1b[5"):
+                scroll = max(scroll - view, 0)
+            elif k == "g":
+                scroll = 0
+            elif k == "G":
+                scroll = _state["maxscroll"]
+            else:
+                continue
+            scroll = render(lines, scroll)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        sys.stdout.write("\033[?25h\033[H\033[2J")
+        sys.stdout.flush()
+
+
+def print_plain(rel, tag):
+    name = rel.get("name") or ""
+    date = (rel.get("published_at") or "")[:10]
+    print(f"Phoenix Term {tag}" + (f" — {name}" if name and name != tag else ""))
+    if date:
+        print(f"released {date}")
+    print()
+    print(rel.get("body") or "(no release notes)")
+    print()
+    print(f"https://github.com/{GH_REPO}/releases/tag/{tag}")
+
+
+def main():
+    args = [a for a in sys.argv[1:] if a != "--inline"]
+    inline = "--inline" in sys.argv[1:]
+    tag = args[0] if args else (installed_tag() or latest_tag())
+    if not tag:
+        print("phoenix-release-notes: couldn't determine a version", file=sys.stderr)
+        sys.exit(1)
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", tag):
+        print(f"phoenix-release-notes: invalid tag: {tag}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        rel = fetch_release(tag)
+    except Exception:
+        print(f"couldn't fetch release notes for {tag} (offline, or GitHub rate limit)",
+              file=sys.stderr)
+        print(f"view online: https://github.com/{GH_REPO}/releases/tag/{tag}",
+              file=sys.stderr)
+        sys.exit(1)
+
+    if not inline and os.environ.get("TMUX") and sys.stdout.isatty():
+        os.execvp("tmux", [
+            "tmux", "display-popup", "-E", "-w", "80%", "-h", "75%",
+            f"exec '{SELF}' --inline '{tag}'",
+        ])
+    if sys.stdout.isatty():
+        run_tui(rel, tag)
+    else:
+        print_plain(rel, tag)
+
+
+if __name__ == "__main__":
+    main()

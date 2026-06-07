@@ -35,7 +35,7 @@ One command installs everything: terminal, font, shell plugins, editor, sidebar,
 | Terminal             | Ghostty (Phoenix wallpaper, LightSeaGreen text, ComicShannsMono font)  |
 | Shell                | zsh + Oh-My-Zsh + zsh-autosuggestions + fast-syntax-highlight          |
 | Prompt               | Starship with Warp-style rounded pills                                 |
-| Multiplexer          | tmux (TPM + tmux-resurrect + tmux-continuum) — Ghostty tabs are tmux windows; each Ghostty window is its own session |
+| Multiplexer          | tmux (TPM + tmux-resurrect + tmux-continuum + extrakto + tmux-open + tmux-cowboy) — Ghostty tabs are tmux windows; each Ghostty window is its own session |
 | Sidebar              | `phoenix-sysmon` — CPU / memory / disk / network / battery + clock     |
 | Welcome              | Per-shell figlet banner ("ANSI Shadow"), optionally pinned as a pane   |
 | Editor               | Neovim + LazyVim with the `phoenix` Black-and-Gold colorscheme         |
@@ -45,6 +45,8 @@ One command installs everything: terminal, font, shell plugins, editor, sidebar,
 | Help                 | tldr (community man-page summaries)                                    |
 | Cheat sheet          | `phoenix-cheat` — tabbed popup of every shortcut, alias, and command   |
 | Clipboard            | `phoenix-clip` — pbcopy on macOS, wl-copy / xclip on Linux             |
+| Browser launcher     | `web` — saved-links popup, localhost dev-server picker, or open any URL |
+| Release notes        | `phoenix-term notes` — what's-new popup, shown automatically after updates |
 
 ---
 
@@ -170,6 +172,17 @@ All set up by `shell/phoenix.zsh`.
 | `tl`        | List existing tmux sessions    |
 | `tk <name>` | Kill a tmux session            |
 
+### Web
+
+| Command      | What it does                                                                   |
+| ------------ | ------------------------------------------------------------------------------ |
+| `web`        | Popup of your saved links — `Enter`/`1-9` opens, `/` search, `a` add, `e` edit, `d` delete |
+| `web <url>`  | Open a URL in your default browser (`https://` added if missing)               |
+| `web <name>` | Open a saved link by its name (tab-completes; case-insensitive prefix works)   |
+| `web dev`    | Popup of localhost dev servers running right now — `Enter` opens, `/` search, `r` rescan |
+
+Saved links are managed in the popup; link names are single words (spaces become `-`). The list lives in `~/.config/phoenix-term/web-list` (plain text, survives updates).
+
 ### History & search
 
 | Command  | What it does                                         |
@@ -241,6 +254,9 @@ Hit `Ctrl-A`, **release**, then the next key.
 | `Ctrl-A H/J/K/L`      | Resize current pane                                |
 | `Ctrl-A r`            | Reload tmux config                                 |
 | `Ctrl-A [` / `Enter`  | Enter copy-mode (scroll + select)                  |
+| `Ctrl-A Tab`          | **extrakto** — fuzzy-grab any path/URL/word from scrollback (insert or copy) |
+| `Ctrl-A g`            | Floating **scratch terminal** (toggle — survives closing) |
+| `Ctrl-A *`            | Force-kill (SIGKILL) the hung process in the current pane |
 | `Ctrl-A d`            | Detach from session (session keeps running)        |
 | Mouse drag       | Selects in copy-mode (mouse mode is on by default) |
 
@@ -250,6 +266,9 @@ Hit `Ctrl-A`, **release**, then the next key.
 | -------- | ------------------------------------------------------------------ |
 | `v`      | Start selection (vi keys)                                          |
 | `y`      | Copy selection to **system clipboard** (`phoenix-clip` handles it) |
+| `o`      | **Open** the selection — URL in browser, file in its default app   |
+| `Ctrl-o` | Open the selected file path in `$EDITOR` (nvim)                    |
+| `S`      | **Web-search** the selection in your browser                       |
 | `q`      | Quit copy mode                                                     |
 | `/` `?`  | Search forward / backward                                          |
 
@@ -357,6 +376,7 @@ phoenix-term doctor         Healthcheck symlinks, packages, shell wiring
 phoenix-term version        Show the release tag this clone is on
 phoenix-term settings       Interactive preferences menu (--list / --get KEY / --set KEY=VALUE)
 phoenix-term cheat          Open the keyboard + command cheat sheet (alias: keys)
+phoenix-term notes [tag]    Show a release's notes (alias: changelog; default: installed version)
 phoenix-term revert         Roll back to the previous install (alias: rollback)
 phoenix-term backups        List available rollback snapshots (alias: list-backups)
 phoenix-term uninstall      Remove symlinks, restore most-recent backups
@@ -382,6 +402,8 @@ phoenix-term update         # Download its tarball, replace install, re-run inst
 ```
 
 `phoenix-term update` resolves the latest tag via the `/releases/latest` redirect, downloads its tarball, moves the current `~/.phoenix-term` to `~/.phoenix-term.bak-<timestamp>` (kept indefinitely — see [Revert](#revert-roll-back-an-update)), extracts the new release, writes the tag to `.version`, and re-execs `install.sh`.
+
+When the install finishes, the new version's **release notes pop up** (a floating panel inside tmux, inline otherwise) — scroll with `↑/↓`, `q` closes. Re-read them anytime with `phoenix-term notes`.
 
 **Your settings survive every update** — `~/.config/phoenix-term/config.zsh` lives outside the install dir. New settings keys appear with defaults; existing keys are never reset.
 
@@ -524,7 +546,9 @@ phoenix-term/
 │   ├── phoenix-banner               → ~/.local/bin/phoenix-banner       (sticky banner pane)
 │   ├── phoenix-tmux-init            → ~/.local/bin/phoenix-tmux-init
 │   ├── phoenix-tmux-rebalance       → ~/.local/bin/phoenix-tmux-rebalance
-│   └── phoenix-clip                 → ~/.local/bin/phoenix-clip         (cross-platform clipboard)
+│   ├── phoenix-clip                 → ~/.local/bin/phoenix-clip         (cross-platform clipboard)
+│   ├── phoenix-web                  → ~/.local/bin/phoenix-web          (the `web` command)
+│   └── phoenix-release-notes        → ~/.local/bin/phoenix-release-notes (what's-new popup)
 └── fonts/
     └── ANSI_Shadow.flf              welcome-banner figlet font
 ```

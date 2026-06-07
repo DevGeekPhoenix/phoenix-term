@@ -86,6 +86,8 @@ TABS = [
             ("Ctrl-A [  /  Enter", "Enter copy mode (scroll + select)"),
             ("v", "Start selection (vi keys)"),
             ("y", "Copy to system clipboard"),
+            ("o  /  Ctrl-o", "Open selection in browser / $EDITOR"),
+            ("S", "Web-search the selection"),
             ("/  ?", "Search forward / backward"),
             ("q", "Quit copy mode"),
         ]),
@@ -94,6 +96,11 @@ TABS = [
             ("Ctrl-A ?", "Open this cheat sheet"),
             ("Ctrl-A r", "Reload tmux config"),
             ("Mouse drag", "Select text (mouse mode is on)"),
+        ]),
+        ("Power tools", [
+            ("Ctrl-A Tab", "Fuzzy-grab text from scrollback (extrakto)"),
+            ("Ctrl-A g", "Floating scratch terminal (toggle)"),
+            ("Ctrl-A *", "Force-kill hung process in pane"),
         ]),
     ]),
     ("Ghostty", [
@@ -132,6 +139,12 @@ TABS = [
             ("rg <pat>", "In-file search (ripgrep)"),
             ("y", "Open yazi file manager"),
         ]),
+        ("Web", [
+            ("web", "Saved-links popup (/ search · a add · e edit · d delete)"),
+            ("web <url / name>", "Open a URL or saved link in your browser"),
+            ("web <Tab>", "Complete saved link names"),
+            ("web dev", "Popup of running localhost servers (r rescan)"),
+        ]),
         ("Git", [
             ("g / gst", "git / git status"),
             ("gco / gp / gl", "checkout / push / pull"),
@@ -169,6 +182,7 @@ TABS = [
     ("Phoenix", [
         ("phoenix-term", [
             ("phoenix-term update", "Install the latest release"),
+            ("phoenix-term notes", "Release notes of the installed version"),
             ("phoenix-term check", "Check for a newer release"),
             ("phoenix-term doctor", "Healthcheck the install"),
             ("phoenix-term settings", "Preferences menu"),

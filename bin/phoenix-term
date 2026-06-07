@@ -39,6 +39,7 @@ case "$cmd" in
     fi
     ;;
   cheat|keys|cheatsheet)  exec "$(dirname "$SELF")/phoenix-cheat" "$@" ;;
+  notes|changelog|whatsnew) exec "$(dirname "$SELF")/phoenix-release-notes" "$@" ;;
   where)                  echo "$REPO" ;;
   help|-h|--help|"")
     cat <<EOF
@@ -52,6 +53,7 @@ Usage:
   phoenix-term revert         Roll back to the most recent backup (alias: rollback)
   phoenix-term backups        List available backups (alias: list-backups)
   phoenix-term cheat          Open the keyboard + command cheat sheet (alias: keys)
+  phoenix-term notes [tag]    Show a release's notes (alias: changelog; default: installed)
   phoenix-term doctor         Healthcheck symlinks, packages, shell wiring
   phoenix-term version        Show the installed release tag
   phoenix-term settings       Interactive preferences menu

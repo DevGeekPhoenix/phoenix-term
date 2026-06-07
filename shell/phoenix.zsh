@@ -85,6 +85,33 @@ command -v fd      >/dev/null && alias find='fd'
 command -v lazygit    >/dev/null && alias lg='lazygit'
 command -v lazydocker >/dev/null && alias ld='lazydocker'
 command -v btop    >/dev/null && alias top='btop'
+alias web='phoenix-web'
+
+_phoenix_web_complete() {
+  local -a saved
+  saved=("${(@f)$(command phoenix-web list 2>/dev/null | awk -F'\t' '{print ($2=="-") ? $3 : $2}')}")
+  saved=(${saved:#})
+  (( CURRENT == 2 )) && compadd -- dev $saved
+}
+(( $+functions[compdef] )) && compdef _phoenix_web_complete phoenix-web web
+
+_phoenix_term_complete() {
+  local -a keys
+  if (( CURRENT == 2 )); then
+    compadd -- install update check doctor uninstall revert backups version settings cheat notes where help
+  elif [[ ${words[2]} == (settings|config) ]]; then
+    if (( CURRENT == 3 )); then
+      compadd -- --menu --list --get --set
+    elif [[ ${words[3]} == (--get|--set) ]]; then
+      keys=("${(@f)$(command phoenix-term settings --list 2>/dev/null | awk '{print $1}' | grep '^PHOENIX_')}")
+      if [[ ${words[3]} == --set ]]; then compadd -S '=' -- $keys
+      else compadd -- $keys; fi
+    fi
+  elif [[ ${words[2]} == install && CURRENT -eq 3 ]]; then
+    compadd -- --dry-run
+  fi
+}
+(( $+functions[compdef] )) && compdef _phoenix_term_complete phoenix-term
 
 if [[ "${PHOENIX_NVIM_DEFAULT:-1}" != "0" ]] && command -v nvim >/dev/null; then
   alias vi='nvim'

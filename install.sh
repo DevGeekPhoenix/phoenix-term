@@ -303,6 +303,8 @@ LINKS=(
   "bin/phoenix-tmux-init|$HOME/.local/bin/phoenix-tmux-init"
   "bin/phoenix-tmux-rebalance|$HOME/.local/bin/phoenix-tmux-rebalance"
   "bin/phoenix-clip|$HOME/.local/bin/phoenix-clip"
+  "bin/phoenix-web|$HOME/.local/bin/phoenix-web"
+  "bin/phoenix-release-notes|$HOME/.local/bin/phoenix-release-notes"
   "nvim/colors/phoenix.lua|$HOME/.config/nvim/colors/phoenix.lua"
   "nvim/lua/plugins/colorscheme.lua|$HOME/.config/nvim/lua/plugins/colorscheme.lua"
   "nvim/lua/lualine/themes/phoenix.lua|$HOME/.config/nvim/lua/lualine/themes/phoenix.lua"
@@ -323,7 +325,7 @@ APT_PACKAGES=(
   figlet fzf ripgrep btop tldr
   zsh-autosuggestions
   python3 build-essential
-  xclip wl-clipboard
+  xclip wl-clipboard xdg-utils
   fontconfig unzip tar
   bat fd-find
 )
@@ -860,7 +862,9 @@ do_install() {
     "$HOME/.local/bin/phoenix-banner" \
     "$HOME/.local/bin/phoenix-tmux-init" \
     "$HOME/.local/bin/phoenix-tmux-rebalance" \
-    "$HOME/.local/bin/phoenix-clip"
+    "$HOME/.local/bin/phoenix-clip" \
+    "$HOME/.local/bin/phoenix-web" \
+    "$HOME/.local/bin/phoenix-release-notes"
 
   if [[ "$PHOENIX_OS" == "macos" && ! -e "$HOME/.hushlogin" ]]; then
     say "silencing the Last-login message (~/.hushlogin)"
@@ -897,6 +901,23 @@ do_install() {
   if [[ "${PHOENIX_LOGIN_SHELL_CHANGED:-0}" == "1" ]]; then
     printf "\n  %s!%s Your default shell was changed to zsh. ${SEA}Log out and back in${R}\n" "$YEL" "$R"
     printf "    (or reboot) for new terminal windows to pick it up.\n\n"
+  fi
+
+  # Stamp fallback covers updaters that predate PHOENIX_SHOW_NOTES (the env
+  # var is exported by the OLD version's do_update, not this one).
+  local notes_ver="${PHOENIX_SHOW_NOTES:-}"
+  local notes_stamp="$HOME/.cache/phoenix-term/notes-shown"
+  if [[ -z "$notes_ver" && -f "$VERSION_FILE" ]]; then
+    local cur_ver shown=""
+    cur_ver=$(head -1 "$VERSION_FILE" | tr -d '[:space:]')
+    [[ -f "$notes_stamp" ]] && shown=$(head -1 "$notes_stamp" | tr -d '[:space:]')
+    [[ -n "$cur_ver" && "$shown" != "$cur_ver" ]] && notes_ver="$cur_ver"
+  fi
+  if [[ -n "$notes_ver" ]] && ! (( DRY_RUN )); then
+    mkdir -p "$(dirname "$notes_stamp")"
+    printf '%s\n' "$notes_ver" > "$notes_stamp"
+    # Pops itself into a tmux popup when inside tmux (same trick as phoenix-cheat).
+    "$HOME/.local/bin/phoenix-release-notes" "$notes_ver" || true
   fi
 }
 
@@ -1252,7 +1273,7 @@ do_update() {
   fi
 
   say "re-running install.sh from $latest"
-  exec bash "$REPO/install.sh"
+  PHOENIX_SHOW_NOTES="$latest" exec bash "$REPO/install.sh"
 }
 
 # ---------- backups / revert ----------
