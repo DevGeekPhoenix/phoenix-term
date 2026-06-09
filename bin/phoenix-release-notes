@@ -73,6 +73,29 @@ def fetch_release(tag):
         return json.load(r)
 
 
+def fetch_releases_list():
+    req = urllib.request.Request(
+        f"https://api.github.com/repos/{GH_REPO}/releases?per_page=100",
+        headers={"User-Agent": "phoenix-term"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.load(r)
+
+
+def collect_range(releases, from_tag, to_tag):
+    picked, started = [], False
+    for rel in releases:
+        t = rel.get("tag_name")
+        if not started:
+            if t == to_tag:
+                started = True
+            else:
+                continue
+        if from_tag and t == from_tag:
+            break
+        picked.append(rel)
+    return picked
+
+
 def render_md(text):
     bat = shutil.which("bat") or os.path.expanduser("~/.local/bin/bat")
     if bat and os.access(bat, os.X_OK):
@@ -115,10 +138,49 @@ def build_lines(rel, tag, width):
     return lines
 
 
-_state = {"maxscroll": 0}
+BGD = (12, 15, 17)
+_state = {"maxscroll": 0, "body": {}}
 
 
-def render(lines, scroll):
+def tab_strip(rels, tab, width):
+    raw = [f" {i + 1} {tag} " for i, (_, tag) in enumerate(rels)]
+    budget = max(10, width - 4)
+    lo = hi = tab
+    used = len(raw[tab])
+    while True:
+        grew = False
+        if lo > 0 and used + len(raw[lo - 1]) + 1 <= budget:
+            lo -= 1
+            used += len(raw[lo]) + 1
+            grew = True
+        if hi < len(raw) - 1 and used + len(raw[hi + 1]) + 1 <= budget:
+            hi += 1
+            used += len(raw[hi]) + 1
+            grew = True
+        if not grew:
+            break
+    parts = [fg(*DIM) + "‹ " + R] if lo > 0 else []
+    for i in range(lo, hi + 1):
+        if i == tab:
+            parts.append(bg(*SEA) + fg(*BGD) + B + raw[i] + R)
+        else:
+            parts.append(fg(*MUTED) + raw[i] + R)
+        parts.append(" ")
+    if hi < len(raw) - 1:
+        parts.append(fg(*DIM) + "›" + R)
+    return "  " + "".join(parts)
+
+
+def body_lines(rels, tab, width):
+    key = (tab, width)
+    cache = _state["body"]
+    if key not in cache:
+        rel, tag = rels[tab]
+        cache[key] = build_lines(rel, tag, width)
+    return cache[key]
+
+
+def render(rels, tab, scroll):
     W, H = shutil.get_terminal_size((100, 30))
     out = ["\033[H\033[2J\033[?25l"]
     left = (f"  {fg(*SEA)}{B}Phoenix Term{R}  "
@@ -127,18 +189,22 @@ def render(lines, scroll):
     pad = max(1, W - 14 - 12 - 20 - 4)
     out.append(f"\033[1;1H{left}{' ' * pad}{right}")
 
-    ctop, cbot = 3, H - 2
+    out.append(f"\033[3;1H{tab_strip(rels, tab, W)}")
+
+    lines = body_lines(rels, tab, max(40, W - 6))
+    ctop, cbot = 5, H - 2
     view = cbot - ctop + 1
     maxscroll = max(0, len(lines) - view)
     _state["maxscroll"] = maxscroll
     scroll = max(0, min(scroll, maxscroll))
-
     for i in range(view):
         idx = scroll + i
         if idx < len(lines):
             out.append(f"\033[{ctop + i};3H{lines[idx]}")
 
-    foot = (f"{fg(*MUTED)}  ↑/↓ scroll"
+    n = len(rels)
+    nav = f"  ←/→ or 1–{min(n, 9)} versions" if n > 1 else "  "
+    foot = (f"{fg(*MUTED)}{nav}    ↑/↓ scroll"
             + ("  ▾" if scroll < maxscroll else "")
             + ("  ▴" if scroll > 0 else "") + f"    q quit{R}")
     out.append(f"\033[{H};1H{foot}")
@@ -156,27 +222,34 @@ def read_key(fd):
     return ch.decode("utf-8", "ignore")
 
 
-def run_tui(rel, tag):
+def run_tui(rels):
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     winch = [True]
     signal.signal(signal.SIGWINCH, lambda *a: winch.__setitem__(0, True))
-    lines, scroll = [], 0
+    tab, scroll = 0, 0
+    n = len(rels)
     try:
         tty.setcbreak(fd)
+        scroll = render(rels, tab, scroll)
         while True:
+            r, _, _ = select.select([fd], [], [], 0.25)
             if winch[0]:
                 winch[0] = False
-                W, _ = shutil.get_terminal_size((100, 30))
-                lines = build_lines(rel, tag, max(40, W - 6))
-                scroll = render(lines, scroll)
-            r, _, _ = select.select([fd], [], [], 0.25)
+                _state["body"].clear()
+                scroll = render(rels, tab, scroll)
             if not r:
                 continue
             k = read_key(fd)
-            view = shutil.get_terminal_size((100, 30))[1] - 4
+            view = shutil.get_terminal_size((100, 30))[1] - 6
             if k in ("q", "\x1b", "\x03"):
                 break
+            elif n > 1 and k in ("\t", "l", "\x1b[C"):
+                tab, scroll = (tab + 1) % n, 0
+            elif n > 1 and k in ("h", "\x1b[D", "\x1b[Z"):
+                tab, scroll = (tab - 1) % n, 0
+            elif k.isdigit() and 1 <= int(k) <= min(n, 9):
+                tab, scroll = int(k) - 1, 0
             elif k in ("j", "\x1b[B"):
                 scroll = min(scroll + 1, _state["maxscroll"])
             elif k in ("k", "\x1b[A"):
@@ -191,54 +264,77 @@ def run_tui(rel, tag):
                 scroll = _state["maxscroll"]
             else:
                 continue
-            scroll = render(lines, scroll)
+            scroll = render(rels, tab, scroll)
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
         sys.stdout.write("\033[?25h\033[H\033[2J")
         sys.stdout.flush()
 
 
-def print_plain(rel, tag):
-    name = rel.get("name") or ""
-    date = (rel.get("published_at") or "")[:10]
-    print(f"Phoenix Term {tag}" + (f" — {name}" if name and name != tag else ""))
-    if date:
-        print(f"released {date}")
-    print()
-    print(rel.get("body") or "(no release notes)")
-    print()
-    print(f"https://github.com/{GH_REPO}/releases/tag/{tag}")
+def print_plain(rels):
+    for i, (rel, tag) in enumerate(rels):
+        if i:
+            print("\n" + "─" * 60 + "\n")
+        name = rel.get("name") or ""
+        date = (rel.get("published_at") or "")[:10]
+        print(f"Phoenix Term {tag}" + (f" — {name}" if name and name != tag else ""))
+        if date:
+            print(f"released {date}")
+        print()
+        print(rel.get("body") or "(no release notes)")
+        print()
+        print(f"https://github.com/{GH_REPO}/releases/tag/{tag}")
+
+
+def load_notes(spec):
+    # spec is a single tag, or a `from..to` range (the gap since last update).
+    if ".." in spec:
+        from_tag, _, to_tag = spec.partition("..")
+        from_tag, to_tag = from_tag.strip(), to_tag.strip()
+    else:
+        from_tag, to_tag = "", spec
+    for t in (from_tag, to_tag):
+        if t and not re.fullmatch(r"[A-Za-z0-9._-]+", t):
+            print(f"phoenix-release-notes: invalid tag: {t}", file=sys.stderr)
+            sys.exit(1)
+    if from_tag:
+        picked = collect_range(fetch_releases_list(), from_tag, to_tag)
+        if not picked:
+            picked = [fetch_release(to_tag)]
+        return to_tag, [(r, r.get("tag_name") or to_tag) for r in picked]
+    return to_tag, [(fetch_release(to_tag), to_tag)]
 
 
 def main():
-    args = [a for a in sys.argv[1:] if a != "--inline"]
-    inline = "--inline" in sys.argv[1:]
-    tag = args[0] if args else (installed_tag() or latest_tag())
-    if not tag:
+    raw = sys.argv[1:]
+    inline = "--inline" in raw
+    args = [a for a in raw if a != "--inline"]
+    spec = args[0] if args else (installed_tag() or latest_tag())
+    if not spec:
         print("phoenix-release-notes: couldn't determine a version", file=sys.stderr)
-        sys.exit(1)
-    if not re.fullmatch(r"[A-Za-z0-9._-]+", tag):
-        print(f"phoenix-release-notes: invalid tag: {tag}", file=sys.stderr)
         sys.exit(1)
 
     try:
-        rel = fetch_release(tag)
+        to_tag, rels = load_notes(spec)
+    except SystemExit:
+        raise
     except Exception:
-        print(f"couldn't fetch release notes for {tag} (offline, or GitHub rate limit)",
+        ref = spec.rsplit("..", 1)[-1]
+        print(f"couldn't fetch release notes for {ref} (offline, or GitHub rate limit)",
               file=sys.stderr)
-        print(f"view online: https://github.com/{GH_REPO}/releases/tag/{tag}",
+        print(f"view online: https://github.com/{GH_REPO}/releases",
               file=sys.stderr)
         sys.exit(1)
 
     if not inline and os.environ.get("TMUX") and sys.stdout.isatty():
         os.execvp("tmux", [
             "tmux", "display-popup", "-E", "-w", "80%", "-h", "75%",
-            f"exec '{SELF}' --inline '{tag}'",
+            f"exec '{SELF}' --inline '{spec}'",
         ])
     if sys.stdout.isatty():
-        run_tui(rel, tag)
+        run_tui(rels)
     else:
-        print_plain(rel, tag)
+        print_plain(rels)
 
 
 if __name__ == "__main__":

@@ -46,6 +46,7 @@ One command installs everything: terminal, font, shell plugins, editor, sidebar,
 | Cheat sheet          | `phoenix-cheat` — tabbed popup of every shortcut, alias, and command   |
 | Clipboard            | `phoenix-clip` — pbcopy on macOS, wl-copy / xclip on Linux             |
 | Browser launcher     | `web` — saved-links popup, localhost dev-server picker, or open any URL |
+| SSH host manager     | `phxssh` — lazyssh TUI over `~/.ssh/config` (connect · add · edit · search · pin) |
 | Release notes        | `phoenix-term notes` — what's-new popup, shown automatically after updates |
 
 ---
@@ -159,8 +160,8 @@ All set up by `shell/phoenix.zsh`.
 | `gp`        | `git push`                                      |
 | `gl`        | `git pull`                                      |
 | `gcm "msg"` | `git commit -m "msg"`                           |
-| `lg`        | Open **lazygit** — full-screen git TUI          |
-| `ld`        | Open **lazydocker** — full-screen docker TUI    |
+| `phxgit`    | Open **lazygit** — full-screen git TUI          |
+| `phxld`     | Open **lazydocker** — full-screen docker TUI    |
 | `gh`        | GitHub CLI (`gh pr create`, `gh issue list`, …) |
 
 ### Tmux
@@ -182,6 +183,16 @@ All set up by `shell/phoenix.zsh`.
 | `web dev`    | Popup of localhost dev servers running right now — `Enter` opens, `/` search, `r` rescan |
 
 Saved links are managed in the popup; link names are single words (spaces become `-`). The list lives in `~/.config/phoenix-term/web-list` (plain text, survives updates).
+
+### SSH
+
+| Command  | What it does                                                                          |
+| -------- | ------------------------------------------------------------------------------------ |
+| `phxssh` | Open the SSH host manager ([lazyssh](https://github.com/Adembc/lazyssh)) — a keyboard-driven TUI over `~/.ssh/config`: `Enter` connect, `a` add, `e` edit, `d` delete, `/` search, `p` pin |
+
+Hosts live in your real `~/.ssh/config`, so anything you add is usable from a bare `ssh <host>` too.
+
+Ghostty's [SSH integration](https://ghostty.org/docs/features/ssh) is enabled (`shell-integration-features = …,ssh-env,ssh-terminfo`): typing **`ssh <host>` directly** at a Ghostty prompt forwards your env and auto-installs the `xterm-ghostty` terminfo on the remote so colors/keys render correctly (cache: `ghostty +ssh-cache`). Note it's a shell-function wrapper, so it only covers a direct `ssh` — `phxssh`/lazyssh execs the real `ssh` binary and bypasses it. That's usually fine, since Phoenix runs inside tmux where `TERM=tmux-256color` is already portable; for a host you reach from a non-tmux pane, install the terminfo once with `infocmp -x xterm-ghostty | ssh <host> -- tic -x -`.
 
 ### History & search
 
@@ -301,8 +312,9 @@ The ones you'll touch first (browse all with `Space s k`):
 | **bat**        | Syntax-highlighted `cat`                   | `cat <file>`                       |
 | **fd**         | Fast, intuitive `find`                     | `find <pattern>`                   |
 | **ripgrep**    | Fast in-file search                        | `rg <pattern>`                     |
-| **lazygit**    | Full-screen git TUI                        | `lg`                               |
-| **lazydocker** | Full-screen docker TUI (containers/logs/…) | `ld`                               |
+| **lazygit**    | Full-screen git TUI                        | `phxgit`                           |
+| **lazydocker** | Full-screen docker TUI (containers/logs/…) | `phxld`                            |
+| **lazyssh**    | SSH host manager TUI over `~/.ssh/config`  | `phxssh`                           |
 | **gh**         | GitHub CLI                                 | `gh auth login`, `gh pr create`    |
 | **yazi**       | TUI file manager — cd's where you exit     | `y`                                |
 | **btop**       | Beautiful process monitor                  | `top`                              |
@@ -376,7 +388,7 @@ phoenix-term doctor         Healthcheck symlinks, packages, shell wiring
 phoenix-term version        Show the release tag this clone is on
 phoenix-term settings       Interactive preferences menu (--list / --get KEY / --set KEY=VALUE)
 phoenix-term cheat          Open the keyboard + command cheat sheet (alias: keys)
-phoenix-term notes [tag]    Show a release's notes (alias: changelog; default: installed version)
+phoenix-term notes [tag|from..to]  Show release notes — one version, or every version in a range (alias: changelog; default: installed)
 phoenix-term revert         Roll back to the previous install (alias: rollback)
 phoenix-term backups        List available rollback snapshots (alias: list-backups)
 phoenix-term uninstall      Remove symlinks, restore most-recent backups
@@ -403,7 +415,7 @@ phoenix-term update         # Download its tarball, replace install, re-run inst
 
 `phoenix-term update` resolves the latest tag via the `/releases/latest` redirect, downloads its tarball, moves the current `~/.phoenix-term` to `~/.phoenix-term.bak-<timestamp>` (kept indefinitely — see [Revert](#revert-roll-back-an-update)), extracts the new release, writes the tag to `.version`, and re-execs `install.sh`.
 
-When the install finishes, the new version's **release notes pop up** (a floating panel inside tmux, inline otherwise) — scroll with `↑/↓`, `q` closes. Re-read them anytime with `phoenix-term notes`.
+When the install finishes, the **release notes pop up** (a floating panel inside tmux, inline otherwise). If you skipped several versions, you get **every release in the gap — one tab per version**: switch with `←/→` or number keys, scroll with `↑/↓`, `q` closes. So jumping `v0.4.0 → v0.5.1` shows v0.4.1, v0.4.2, v0.5.0 and v0.5.1, not just the newest. Re-read them anytime with `phoenix-term notes`, or view a specific span with `phoenix-term notes <from>..<to>`.
 
 **Your settings survive every update** — `~/.config/phoenix-term/config.zsh` lives outside the install dir. New settings keys appear with defaults; existing keys are never reset.
 

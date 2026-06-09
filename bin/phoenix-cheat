@@ -145,11 +145,16 @@ TABS = [
             ("web <Tab>", "Complete saved link names"),
             ("web dev", "Popup of running localhost servers (r rescan)"),
         ]),
+        ("SSH", [
+            ("phxssh", "SSH host manager (lazyssh) over ~/.ssh/config"),
+            ("Enter / a / e / d", "Connect / add / edit / delete host"),
+            ("/  ·  p", "Fuzzy search · pin favorite"),
+        ]),
         ("Git", [
             ("g / gst", "git / git status"),
             ("gco / gp / gl", "checkout / push / pull"),
             ("gcm \"msg\"", "git commit -m"),
-            ("lg  /  ld", "lazygit / lazydocker TUI"),
+            ("phxgit / phxld", "lazygit / lazydocker TUI"),
             ("gh", "GitHub CLI"),
         ]),
         ("History & search", [
@@ -182,7 +187,7 @@ TABS = [
     ("Phoenix", [
         ("phoenix-term", [
             ("phoenix-term update", "Install the latest release"),
-            ("phoenix-term notes", "Release notes of the installed version"),
+            ("phoenix-term notes", "Release notes — one version, or a..b range"),
             ("phoenix-term check", "Check for a newer release"),
             ("phoenix-term doctor", "Healthcheck the install"),
             ("phoenix-term settings", "Preferences menu"),

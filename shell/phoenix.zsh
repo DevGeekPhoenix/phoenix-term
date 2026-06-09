@@ -82,9 +82,10 @@ fi
 command -v bat     >/dev/null && alias cat='bat --paging=never --style=plain'
 command -v bat     >/dev/null && export MANPAGER="sh -c 'col -bx | bat -l man -p'"
 command -v fd      >/dev/null && alias find='fd'
-command -v lazygit    >/dev/null && alias lg='lazygit'
-command -v lazydocker >/dev/null && alias ld='lazydocker'
+command -v lazygit    >/dev/null && alias phxgit='lazygit'
+command -v lazydocker >/dev/null && alias phxld='lazydocker'
 command -v btop    >/dev/null && alias top='btop'
+command -v lazyssh >/dev/null && alias phxssh='lazyssh'
 alias web='phoenix-web'
 
 _phoenix_web_complete() {

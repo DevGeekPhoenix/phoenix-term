@@ -310,10 +310,11 @@ LINKS=(
   "nvim/lua/lualine/themes/phoenix.lua|$HOME/.config/nvim/lua/lualine/themes/phoenix.lua"
 )
 
+BREW_TAPS=(Adembc/homebrew-tap)
 BREW_FORMULAS=(
   tmux starship zoxide fzf eza bat fd ripgrep lazygit lazydocker gh atuin yazi
   btop tldr zsh-autosuggestions zsh-fast-syntax-highlighting figlet
-  neovim
+  neovim lazyssh
 )
 BREW_CASKS=(ghostty font-comic-shanns-mono-nerd-font)
 
@@ -333,6 +334,9 @@ APT_PACKAGES=(
 NVIM_LINUX_TARBALL_URL_X86="https://github.com/neovim/neovim/releases/download/stable/nvim-linux-x86_64.tar.gz"
 NVIM_LINUX_TARBALL_URL_ARM="https://github.com/neovim/neovim/releases/download/stable/nvim-linux-arm64.tar.gz"
 
+# lazyssh — SSH host manager (the phxssh command). Not in apt; pinned GitHub release.
+LAZYSSH_LINUX_VERSION="v0.3.0"
+
 NERD_FONT_ZIP_URL="https://github.com/ryanoasis/nerd-fonts/releases/latest/download/ComicShannsMono.zip"
 
 SOURCE_LINE="source $REPO/shell/phoenix.zsh"
@@ -341,7 +345,10 @@ SOURCE_LINE_PATTERN='^source .+/shell/phoenix\.zsh$'
 # ---------- install ----------
 
 install_brew_packages() {
-  local installed missing=()
+  local installed missing=() t
+  for t in "${BREW_TAPS[@]}"; do
+    run brew tap "$t" || warn "brew tap $t failed — ${t##*/} may not install"
+  done
   installed=$(brew list --formula -1 2>/dev/null || true)
   for f in "${BREW_FORMULAS[@]}"; do
     grep -qx "$f" <<<"$installed" || missing+=("$f")
@@ -587,6 +594,28 @@ install_neovim_linux() {
   rm -rf "$tmp"
 }
 
+# lazyssh ships a bare binary per OS/arch — drop it in /usr/local/bin. The release
+# asset uses arm64 (not aarch64) for the ARM build.
+install_lazyssh_linux() {
+  if command -v lazyssh >/dev/null; then
+    say "lazyssh already installed ($(command -v lazyssh))"
+    return 0
+  fi
+  say "installing lazyssh $LAZYSSH_LINUX_VERSION (GitHub release)"
+  if (( DRY_RUN )); then dry "fetch lazyssh tarball, install to /usr/local/bin"; return 0; fi
+  local asset_arch
+  case "$PHOENIX_ARCH" in
+    x86_64)  asset_arch="x86_64" ;;
+    aarch64) asset_arch="arm64" ;;
+  esac
+  local url="https://github.com/Adembc/lazyssh/releases/download/${LAZYSSH_LINUX_VERSION}/lazyssh_Linux_${asset_arch}.tar.gz"
+  local tmp; tmp=$(mktemp -d)
+  curl -fsSL -o "$tmp/lazyssh.tar.gz" "$url"
+  tar -C "$tmp" -xzf "$tmp/lazyssh.tar.gz" lazyssh
+  sudo_if_needed install -m 0755 "$tmp/lazyssh" /usr/local/bin/lazyssh
+  rm -rf "$tmp"
+}
+
 install_zsh_fsh_linux() {
   local dst="$HOME/.zsh/plugins/fast-syntax-highlighting"
   [[ -d "$dst" ]] && return 0
@@ -705,6 +734,7 @@ install_linux_extras() {
   ( install_lazydocker_linux )     || warn "lazydocker install failed — 'ld' alias unavailable"
   ( install_yazi_linux )           || warn "yazi install failed — 'y' file-manager alias unavailable"
   ( install_neovim_linux )         || warn "neovim install failed — LazyVim won't run; install nvim ≥ 0.9 and re-run"
+  ( install_lazyssh_linux )        || warn "lazyssh install failed — 'phxssh' SSH manager unavailable"
   ( install_zsh_fsh_linux )        || warn "zsh-fast-syntax-highlighting clone failed — syntax highlighting off"
   ( install_ghostty_linux )        || warn "ghostty install failed — see message above"
   ( install_nerd_font_linux )      || warn "nerd font install failed — terminal will fall back to default font"
@@ -906,6 +936,7 @@ do_install() {
   # Stamp fallback covers updaters that predate PHOENIX_SHOW_NOTES (the env
   # var is exported by the OLD version's do_update, not this one).
   local notes_ver="${PHOENIX_SHOW_NOTES:-}"
+  local notes_from="${PHOENIX_SHOW_NOTES_FROM:-}"
   local notes_stamp="$HOME/.cache/phoenix-term/notes-shown"
   if [[ -z "$notes_ver" && -f "$VERSION_FILE" ]]; then
     local cur_ver shown=""
@@ -913,11 +944,22 @@ do_install() {
     [[ -f "$notes_stamp" ]] && shown=$(head -1 "$notes_stamp" | tr -d '[:space:]')
     [[ -n "$cur_ver" && "$shown" != "$cur_ver" ]] && notes_ver="$cur_ver"
   fi
+  # When the updater didn't hand us the prior version (old updater, or the stamp
+  # fallback), read it off the newest backup so a multi-version jump still shows
+  # every release in the gap — one tab per version — not just the newest.
+  if [[ -n "$notes_ver" && -z "$notes_from" ]]; then
+    local newest_bak
+    newest_bak=$(ls -dt "$REPO".bak-* 2>/dev/null | head -1)
+    [[ -n "$newest_bak" && -f "$newest_bak/.version" ]] \
+      && notes_from=$(head -1 "$newest_bak/.version" | tr -d '[:space:]')
+  fi
   if [[ -n "$notes_ver" ]] && ! (( DRY_RUN )); then
     mkdir -p "$(dirname "$notes_stamp")"
     printf '%s\n' "$notes_ver" > "$notes_stamp"
+    local notes_spec="$notes_ver"
+    [[ -n "$notes_from" && "$notes_from" != "$notes_ver" ]] && notes_spec="$notes_from..$notes_ver"
     # Pops itself into a tmux popup when inside tmux (same trick as phoenix-cheat).
-    "$HOME/.local/bin/phoenix-release-notes" "$notes_ver" || true
+    "$HOME/.local/bin/phoenix-release-notes" "$notes_spec" || true
   fi
 }
 
@@ -1081,7 +1123,7 @@ do_doctor() {
       done
       printf "\n%sLinux extras%s\n" "$DIM" "$R"
       local tool
-      for tool in starship zoxide atuin gh eza lazygit lazydocker yazi nvim; do
+      for tool in starship zoxide atuin gh eza lazygit lazydocker yazi nvim lazyssh; do
         if command -v "$tool" >/dev/null; then ok "$tool ($(command -v "$tool"))"
         else bad "$tool not in PATH"; fail=1; fi
       done
@@ -1273,7 +1315,7 @@ do_update() {
   fi
 
   say "re-running install.sh from $latest"
-  PHOENIX_SHOW_NOTES="$latest" exec bash "$REPO/install.sh"
+  PHOENIX_SHOW_NOTES="$latest" PHOENIX_SHOW_NOTES_FROM="$cur" exec bash "$REPO/install.sh"
 }
 
 # ---------- backups / revert ----------
