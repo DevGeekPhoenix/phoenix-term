@@ -107,16 +107,21 @@ detect_os() {
         PHOENIX_DISTRO="${ID:-unknown}"
         case "$ID" in
           ubuntu|debian|linuxmint|pop|kali|elementary|raspbian|zorin) PHOENIX_OS=debian ;;
+          fedora|nobara|ultramarine|bazzite) PHOENIX_OS=fedora ;;
+          # RHEL clones carry ID_LIKE=…fedora but ship a different package set —
+          # reject them explicitly so the ID_LIKE fallback below can't accept them.
+          rhel|centos|rocky|almalinux|ol|amzn|scientific|virtuozzo|cloudlinux) ;;
           *)
             case "${ID_LIKE:-}" in
               *debian*|*ubuntu*) PHOENIX_OS=debian ;;
+              *fedora*)          PHOENIX_OS=fedora ;;
             esac
             ;;
         esac
       fi
       if [[ -z "$PHOENIX_OS" ]]; then
         warn "unsupported Linux distro: ${PHOENIX_DISTRO:-unknown}"
-        warn "Phoenix Term supports macOS and Debian/Ubuntu derivatives only"
+        warn "Phoenix Term supports macOS, Debian/Ubuntu, and Fedora derivatives only"
         exit 1
       fi
       ;;
@@ -145,7 +150,7 @@ _pre_bad() { printf "  %s✗%s %s\n" "$RED" "$R" "$*"; }
 _pre_fix() { printf "      %s%s%s\n" "$DIM" "$*" "$R"; }
 
 _pre_need_cmd() {
-  local cmd="$1" mac_fix="$2" deb_fix="$3"
+  local cmd="$1" mac_fix="$2" deb_fix="$3" fedora_fix="$4"
   if command -v "$cmd" >/dev/null 2>&1; then
     _pre_ok "$cmd available"
     return 0
@@ -154,6 +159,7 @@ _pre_need_cmd() {
   case "$PHOENIX_OS" in
     macos)  _pre_fix "$mac_fix" ;;
     debian) _pre_fix "$deb_fix" ;;
+    fedora) _pre_fix "$fedora_fix" ;;
   esac
   return 1
 }
@@ -260,10 +266,12 @@ preflight() {
 
   _pre_need_cmd curl \
     "/usr/bin/curl ships with macOS — your install is broken" \
-    "sudo apt update && sudo apt install -y curl" || fail=1
+    "sudo apt update && sudo apt install -y curl" \
+    "sudo dnf install -y curl" || fail=1
   _pre_need_cmd tar \
     "/usr/bin/tar ships with macOS — your install is broken" \
-    "sudo apt install -y tar" || fail=1
+    "sudo apt install -y tar" \
+    "sudo dnf install -y tar" || fail=1
 
   _pre_home_writable    || fail=1
   _pre_github_reachable || fail=1
@@ -278,6 +286,10 @@ preflight() {
       _pre_sudo_linux                                                                    || fail=1
       _pre_need_cmd apt-get  "" "this isn't a Debian/Ubuntu derivative — detect_os bug?" || fail=1
       _pre_apt_lock                                                                      || fail=1
+      ;;
+    fedora)
+      _pre_sudo_linux                                                                 || fail=1
+      _pre_need_cmd dnf  "" "" "this isn't a Fedora derivative — detect_os bug?"      || fail=1
       ;;
   esac
 
@@ -319,11 +331,11 @@ BREW_FORMULAS=(
 BREW_CASKS=(ghostty font-comic-shanns-mono-nerd-font)
 
 # Tools not in apt (starship, eza, lazygit, lazydocker, atuin, yazi, neovim ≥ 0.9,
-# ghostty, zsh-fast-syntax-highlighting) are fetched in install_linux_extras.
+# ghostty, tldr, zsh-fast-syntax-highlighting) are fetched in install_linux_extras.
 # Packages here that don't exist on a given distro are filtered before install.
 APT_PACKAGES=(
   zsh tmux git curl wget ca-certificates
-  figlet fzf ripgrep btop tldr
+  figlet fzf ripgrep btop
   zsh-autosuggestions
   python3 build-essential
   xclip wl-clipboard xdg-utils
@@ -331,11 +343,30 @@ APT_PACKAGES=(
   bat fd-find
 )
 
+# Fedora (dnf). bat/fd-find install /usr/bin/bat and /usr/bin/fd directly (no
+# rename). gh ships in Fedora's repos; util-linux-user provides chsh. tldr,
+# starship, eza, lazygit/-docker, atuin, yazi, neovim, lazyssh, ghostty come via
+# install_linux_extras (curl/GitHub release / COPR).
+DNF_PACKAGES=(
+  zsh tmux git curl wget ca-certificates
+  figlet fzf ripgrep btop
+  zsh-autosuggestions
+  python3 gcc make
+  xclip wl-clipboard xdg-utils
+  fontconfig unzip tar
+  bat fd-find
+  gh util-linux-user
+)
+
 NVIM_LINUX_TARBALL_URL_X86="https://github.com/neovim/neovim/releases/download/stable/nvim-linux-x86_64.tar.gz"
 NVIM_LINUX_TARBALL_URL_ARM="https://github.com/neovim/neovim/releases/download/stable/nvim-linux-arm64.tar.gz"
 
 # lazyssh — SSH host manager (the phxssh command). Not in apt; pinned GitHub release.
 LAZYSSH_LINUX_VERSION="v0.3.0"
+
+# tealdeer — the `tldr` client. Native package on most distros; this pins the
+# GitHub-release fallback for spins that package neither tealdeer nor old tldr.
+TEALDEER_LINUX_VERSION="v1.8.1"
 
 NERD_FONT_ZIP_URL="https://github.com/ryanoasis/nerd-fonts/releases/latest/download/ComicShannsMono.zip"
 
@@ -403,9 +434,34 @@ install_apt_packages() {
   sudo_if_needed apt-get install -y "${missing[@]}"
 }
 
+# ---------- Linux (Fedora) installers ----------
+
+install_dnf_packages() {
+  local missing=()
+  for pkg in "${DNF_PACKAGES[@]}"; do
+    rpm -q "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
+  done
+  if (( ${#missing[@]} == 0 )); then
+    say "dnf packages already installed (${#DNF_PACKAGES[@]}/${#DNF_PACKAGES[@]})"
+    return 0
+  fi
+  # A package absent on a given spin (e.g. eza orphaned on F42) shouldn't abort
+  # the whole transaction. dnf5 (F41+) uses --skip-unavailable; dnf4 --skip-broken.
+  local skipflag=--skip-broken
+  if dnf install --help 2>&1 | grep -q -- --skip-unavailable; then
+    skipflag=--skip-unavailable
+  fi
+  say "installing dnf packages (${#missing[@]} missing): ${missing[*]}"
+  sudo_if_needed dnf install -y "$skipflag" "${missing[@]}"
+}
+
+# ---------- Linux (Debian/Ubuntu) installers ----------
+
 # Debian ships `bat` as `batcat` and `fd` as `fdfind` (name conflicts);
-# phoenix.zsh expects the upstream names.
+# phoenix.zsh expects the upstream names. Fedora's packages are already correctly
+# named, so this is debian-only.
 link_debian_renamed_binaries() {
+  [[ "$PHOENIX_OS" == debian ]] || return 0
   run mkdir -p "$HOME/.local/bin"
   if [[ -x /usr/bin/batcat && ! -e "$HOME/.local/bin/bat" ]]; then
     run ln -s /usr/bin/batcat "$HOME/.local/bin/bat"
@@ -448,6 +504,8 @@ install_atuin_linux() {
 }
 
 install_gh_linux() {
+  # Fedora installs gh from its own repos (DNF_PACKAGES); this is the apt route.
+  [[ "$PHOENIX_OS" == debian ]] || return 0
   command -v gh >/dev/null && return 0
   say "installing GitHub CLI"
   if (( DRY_RUN )); then
@@ -477,9 +535,13 @@ gh_latest_tag() {
 
 install_eza_linux() {
   command -v eza >/dev/null && return 0
-  if apt-cache show eza >/dev/null 2>&1; then
+  if [[ "$PHOENIX_OS" == debian ]] && apt-cache show eza >/dev/null 2>&1; then
     say "installing eza (apt)"
     sudo_if_needed apt-get install -y eza
+    return 0
+  fi
+  if [[ "$PHOENIX_OS" == fedora ]] && sudo_if_needed dnf install -y eza 2>/dev/null; then
+    say "installing eza (dnf)"
     return 0
   fi
   say "installing eza (GitHub release)"
@@ -497,6 +559,32 @@ install_eza_linux() {
   mv "$tmp/eza" "$HOME/.local/bin/eza"
   chmod +x "$HOME/.local/bin/eza"
   rm -rf "$tmp"
+}
+
+# tldr (tealdeer). Native package where available (Debian removed plain `tldr`
+# in trixie — tealdeer's binary is `tldr`), else the upstream static binary.
+install_tldr_linux() {
+  command -v tldr >/dev/null && return 0
+  if [[ "$PHOENIX_OS" == debian ]] && apt-cache show tealdeer >/dev/null 2>&1; then
+    say "installing tealdeer (apt)"
+    sudo_if_needed apt-get install -y tealdeer
+    return 0
+  fi
+  if [[ "$PHOENIX_OS" == fedora ]] && sudo_if_needed dnf install -y tealdeer 2>/dev/null; then
+    say "installing tealdeer (dnf)"
+    return 0
+  fi
+  say "installing tealdeer $TEALDEER_LINUX_VERSION (GitHub release)"
+  if (( DRY_RUN )); then dry "fetch tealdeer binary → ~/.local/bin/tldr"; return 0; fi
+  local arch
+  case "$PHOENIX_ARCH" in
+    x86_64)  arch=x86_64 ;;
+    aarch64) arch=aarch64 ;;
+  esac
+  local url="https://github.com/tealdeer-rs/tealdeer/releases/download/${TEALDEER_LINUX_VERSION}/tealdeer-linux-${arch}-musl"
+  mkdir -p "$HOME/.local/bin"
+  curl -fsSL -o "$HOME/.local/bin/tldr" "$url"
+  chmod +x "$HOME/.local/bin/tldr"
 }
 
 install_lazygit_linux() {
@@ -623,7 +711,33 @@ install_zsh_fsh_linux() {
   run git clone --depth 1 https://github.com/zdharma-continuum/fast-syntax-highlighting "$dst"
 }
 
+install_ghostty_fedora() {
+  if command -v ghostty >/dev/null; then
+    say "ghostty already installed ($(command -v ghostty))"
+    return 0
+  fi
+  say "installing ghostty via COPR scottames/ghostty"
+  if (( DRY_RUN )); then
+    dry "dnf copr enable scottames/ghostty && dnf install ghostty"
+    return 0
+  fi
+  if sudo_if_needed dnf install -y dnf-plugins-core >/dev/null 2>&1 \
+     && sudo_if_needed dnf copr enable -y scottames/ghostty >/dev/null 2>&1 \
+     && sudo_if_needed dnf install -y ghostty; then
+    ok_msg "ghostty installed via COPR"
+    return 0
+  fi
+  warn "could not auto-install Ghostty via COPR on this spin."
+  warn "install manually from https://ghostty.org/docs/install (COPR or Flatpak) —"
+  warn "phoenix works without it in any truecolor terminal (Alacritty, Kitty, foot, GNOME Terminal)."
+  return 0
+}
+
 install_ghostty_linux() {
+  if [[ "$PHOENIX_OS" == fedora ]]; then
+    install_ghostty_fedora
+    return $?
+  fi
   # The Ghostty snap is sandboxed even when advertised as classic, which
   # prevents `command = zsh -l` from finding /usr/bin/zsh on the host —
   # Ghostty silently falls back to bash and phoenix.zsh never sources.
@@ -730,6 +844,7 @@ install_linux_extras() {
   ( install_atuin_linux )          || warn "atuin install failed — Ctrl-R history search won't work"
   ( install_gh_linux )             || warn "gh install failed — try later: sudo apt install gh (after the cli.github.com repo step)"
   ( install_eza_linux )            || warn "eza install failed — 'ls' alias will fall back to default ls"
+  ( install_tldr_linux )           || warn "tldr install failed — 'tldr' cheatsheets unavailable"
   ( install_lazygit_linux )        || warn "lazygit install failed — 'lg' alias unavailable"
   ( install_lazydocker_linux )     || warn "lazydocker install failed — 'ld' alias unavailable"
   ( install_yazi_linux )           || warn "yazi install failed — 'y' file-manager alias unavailable"
@@ -815,6 +930,13 @@ install_packages_debian() {
   install_linux_extras
 }
 
+install_packages_fedora() {
+  say "installing dnf packages"
+  install_dnf_packages
+  say "installing Linux extras (starship, eza, tldr, lazygit, lazydocker, neovim, ghostty, fonts, …)"
+  install_linux_extras
+}
+
 do_install() {
   detect_os
   preflight
@@ -822,6 +944,7 @@ do_install() {
   case "$PHOENIX_OS" in
     macos)  install_packages_macos ;;
     debian) install_packages_debian ;;
+    fedora) install_packages_fedora ;;
   esac
 
   if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
@@ -865,7 +988,7 @@ do_install() {
   local figlet_fonts=""
   case "$PHOENIX_OS" in
     macos)  figlet_fonts="$(brew --prefix 2>/dev/null)/share/figlet/fonts" ;;
-    debian)
+    debian|fedora)
       for d in /usr/share/figlet /usr/share/figlet/fonts; do
         [[ -d "$d" ]] && figlet_fonts="$d" && break
       done
@@ -873,7 +996,7 @@ do_install() {
   esac
   if [[ -n "$figlet_fonts" && -d "$figlet_fonts" && ! -f "$figlet_fonts/ANSI_Shadow.flf" ]]; then
     say "installing ANSI_Shadow figlet font"
-    if [[ "$PHOENIX_OS" == "debian" ]]; then
+    if [[ "$PHOENIX_OS" != "macos" ]]; then
       sudo_if_needed cp "$REPO/fonts/ANSI_Shadow.flf" "$figlet_fonts/"
     else
       run cp "$REPO/fonts/ANSI_Shadow.flf" "$figlet_fonts/"
@@ -1123,7 +1246,33 @@ do_doctor() {
       done
       printf "\n%sLinux extras%s\n" "$DIM" "$R"
       local tool
-      for tool in starship zoxide atuin gh eza lazygit lazydocker yazi nvim lazyssh; do
+      for tool in starship zoxide atuin gh eza tldr lazygit lazydocker yazi nvim lazyssh; do
+        if command -v "$tool" >/dev/null; then ok "$tool ($(command -v "$tool"))"
+        else bad "$tool not in PATH"; fail=1; fi
+      done
+      if [[ -d "$HOME/.zsh/plugins/fast-syntax-highlighting" ]]; then
+        ok "zsh-fast-syntax-highlighting"
+      else
+        bad "zsh-fast-syntax-highlighting missing"; fail=1
+      fi
+      if [[ -d "$HOME/.local/share/fonts/ComicShannsMono" ]] \
+         && ls "$HOME/.local/share/fonts/ComicShannsMono"/*.ttf >/dev/null 2>&1; then
+        ok "ComicShannsMono Nerd Font"
+      else
+        bad "ComicShannsMono Nerd Font missing"; fail=1
+      fi
+      if command -v ghostty >/dev/null; then ok "ghostty ($(command -v ghostty))"
+      else bad "ghostty not in PATH — install manually if needed"; fail=1; fi
+      doctor_de_shortcuts
+      ;;
+    fedora)
+      printf "\n%sdnf packages%s\n" "$DIM" "$R"
+      for pkg in "${DNF_PACKAGES[@]}"; do
+        if rpm -q "$pkg" >/dev/null 2>&1; then ok "$pkg"; else bad "$pkg"; fail=1; fi
+      done
+      printf "\n%sLinux extras%s\n" "$DIM" "$R"
+      local tool
+      for tool in starship zoxide atuin eza tldr lazygit lazydocker yazi nvim lazyssh; do
         if command -v "$tool" >/dev/null; then ok "$tool ($(command -v "$tool"))"
         else bad "$tool not in PATH"; fail=1; fi
       done
@@ -1158,7 +1307,7 @@ do_doctor() {
   local figlet_fonts=""
   case "$PHOENIX_OS" in
     macos) figlet_fonts="$(brew --prefix 2>/dev/null)/share/figlet/fonts" ;;
-    debian)
+    debian|fedora)
       for d in /usr/share/figlet /usr/share/figlet/fonts; do
         [[ -d "$d" ]] && figlet_fonts="$d" && break
       done

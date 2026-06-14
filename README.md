@@ -1,6 +1,6 @@
 # Phoenix Term
 
-A complete, opinionated terminal stack for **macOS and Debian/Ubuntu Linux** — Ghostty + tmux + Starship + LazyVim — with a live system-monitor sidebar, a welcome banner, per-command divider rules, and a cohesive LightSeaGreen + Phoenix color theme across every layer.
+A complete, opinionated terminal stack for **macOS, Debian/Ubuntu, and Fedora Linux** — Ghostty + tmux + Starship + LazyVim — with a live system-monitor sidebar, a welcome banner, per-command divider rules, and a cohesive LightSeaGreen + Phoenix color theme across every layer.
 
 One command installs everything: terminal, font, shell plugins, editor, sidebar, and ~18 modern CLI tools.
 
@@ -68,6 +68,10 @@ That's it. You'll click through two dialogs mid-install: the Xcode Command Line 
 ### Linux (Debian/Ubuntu and derivatives)
 
 Supported: **Ubuntu, Debian, Mint, Pop!\_OS, Kali, elementary, Zorin, Raspbian** on **x86_64 / aarch64**. On a fresh box: `sudo apt update && sudo apt install -y curl` first. The installer `sudo`s once for apt packages; the rest stays in your home. Ghostty installs via the mkasberg `.deb` (snap fallback) — best-effort, with a manual link printed if both fail.
+
+### Linux (Fedora and derivatives)
+
+Supported: **Fedora, Nobara, Ultramarine, Bazzite** on **x86_64 / aarch64**. On a fresh box: `sudo dnf install -y curl` first. The installer `sudo`s once for dnf packages; the rest stays in your home. Ghostty installs from the `scottames/ghostty` COPR — best-effort, with a manual link printed if it fails. (RHEL/Rocky/Alma are not supported — package availability differs.)
 
 ### Pin a specific release
 
@@ -571,10 +575,10 @@ Edit any file in this repo and reload the relevant tool — every config in `~/`
 
 ## Requirements
 
-- **macOS** (Apple Silicon or Intel) **or** **Debian/Ubuntu Linux** (x86_64 or aarch64)
+- **macOS** (Apple Silicon or Intel), **Debian/Ubuntu Linux**, **or Fedora Linux** (x86_64 or aarch64)
 - **Internet** — packages, Oh-My-Zsh, TPM, LazyVim, fonts, tool install scripts
-- **`git` + `curl`** — already on macOS (via Xcode CLT); on Linux: `sudo apt install git curl`
-- **`sudo` access** (Linux only — for `apt install` and `/opt/nvim*`)
+- **`git` + `curl`** — already on macOS (via Xcode CLT); on Linux: `sudo apt install git curl` or `sudo dnf install git curl`
+- **`sudo` access** (Linux only — for `apt`/`dnf install` and `/opt/nvim*`)
 
 ---
 

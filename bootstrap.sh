@@ -18,7 +18,7 @@ say()  { printf "%s•%s %s\n" "$SEA" "$R" "$*"; }
 warn() { printf "%s!%s %s\n" "$YEL" "$R" "$*" >&2; }
 die()  { printf "%s✗%s %s\n" "$RED" "$R" "$*" >&2; exit 1; }
 
-command -v curl >/dev/null 2>&1 || die "curl is required (sudo apt install curl  /  brew install curl)"
+command -v curl >/dev/null 2>&1 || die "curl is required (sudo apt install curl  /  sudo dnf install curl  /  brew install curl)"
 command -v tar  >/dev/null 2>&1 || die "tar is required"
 
 printf "\n%s%sPhoenix Term — bootstrap%s\n" "$SEA" "$B" "$R"
