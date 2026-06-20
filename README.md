@@ -1,6 +1,6 @@
 # Phoenix Term
 
-A complete, opinionated terminal stack for **macOS, Debian/Ubuntu, and Fedora Linux** — Ghostty + tmux + Starship + LazyVim — with a live system-monitor sidebar, a welcome banner, per-command divider rules, and a cohesive LightSeaGreen + Phoenix color theme across every layer.
+A complete, opinionated terminal stack for **macOS, Debian/Ubuntu, Fedora, and Arch Linux** — Ghostty + tmux + Starship + LazyVim — with a live system-monitor sidebar, a welcome banner, per-command divider rules, and a cohesive LightSeaGreen + Phoenix color theme across every layer.
 
 One command installs everything: terminal, font, shell plugins, editor, sidebar, and ~18 modern CLI tools.
 
@@ -72,6 +72,10 @@ Supported: **Ubuntu, Debian, Mint, Pop!\_OS, Kali, elementary, Zorin, Raspbian**
 ### Linux (Fedora and derivatives)
 
 Supported: **Fedora, Nobara, Ultramarine, Bazzite** on **x86_64 / aarch64**. On a fresh box: `sudo dnf install -y curl` first. The installer `sudo`s once for dnf packages; the rest stays in your home. Ghostty installs from the `scottames/ghostty` COPR — best-effort, with a manual link printed if it fails. (RHEL/Rocky/Alma are not supported — package availability differs.)
+
+### Linux (Arch and derivatives)
+
+Supported: **Arch, Manjaro, EndeavourOS, Garuda, CachyOS, ArcoLinux, Artix** on **x86_64 / aarch64**. On a fresh box: `sudo pacman -S --needed curl` first. Everything Phoenix needs (including Ghostty) is in the official repos. ⚠️ Arch forbids partial upgrades, so the installer runs a full **`pacman -Syu`** — it upgrades your whole system, not just Phoenix's packages (a kernel update may want a reboot). Only `lazyssh` (AUR) is fetched from its GitHub release instead.
 
 ### Pin a specific release
 
@@ -575,10 +579,10 @@ Edit any file in this repo and reload the relevant tool — every config in `~/`
 
 ## Requirements
 
-- **macOS** (Apple Silicon or Intel), **Debian/Ubuntu Linux**, **or Fedora Linux** (x86_64 or aarch64)
+- **macOS** (Apple Silicon or Intel), **Debian/Ubuntu**, **Fedora**, **or Arch Linux** (x86_64 or aarch64)
 - **Internet** — packages, Oh-My-Zsh, TPM, LazyVim, fonts, tool install scripts
-- **`git` + `curl`** — already on macOS (via Xcode CLT); on Linux: `sudo apt install git curl` or `sudo dnf install git curl`
-- **`sudo` access** (Linux only — for `apt`/`dnf install` and `/opt/nvim*`)
+- **`git` + `curl`** — already on macOS (via Xcode CLT); on Linux: `sudo apt install git curl`, `sudo dnf install git curl`, or `sudo pacman -S --needed git curl`
+- **`sudo` access** (Linux only — for `apt`/`dnf`/`pacman` and `/opt/nvim*`)
 
 ---
 

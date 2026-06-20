@@ -108,6 +108,7 @@ detect_os() {
         case "$ID" in
           ubuntu|debian|linuxmint|pop|kali|elementary|raspbian|zorin) PHOENIX_OS=debian ;;
           fedora|nobara|ultramarine|bazzite) PHOENIX_OS=fedora ;;
+          arch|manjaro|endeavouros|garuda|arcolinux|artix|cachyos) PHOENIX_OS=arch ;;
           # RHEL clones carry ID_LIKE=…fedora but ship a different package set —
           # reject them explicitly so the ID_LIKE fallback below can't accept them.
           rhel|centos|rocky|almalinux|ol|amzn|scientific|virtuozzo|cloudlinux) ;;
@@ -115,13 +116,14 @@ detect_os() {
             case "${ID_LIKE:-}" in
               *debian*|*ubuntu*) PHOENIX_OS=debian ;;
               *fedora*)          PHOENIX_OS=fedora ;;
+              *arch*)            PHOENIX_OS=arch ;;
             esac
             ;;
         esac
       fi
       if [[ -z "$PHOENIX_OS" ]]; then
         warn "unsupported Linux distro: ${PHOENIX_DISTRO:-unknown}"
-        warn "Phoenix Term supports macOS, Debian/Ubuntu, and Fedora derivatives only"
+        warn "Phoenix Term supports macOS, Debian/Ubuntu, Fedora, and Arch derivatives only"
         exit 1
       fi
       ;;
@@ -150,7 +152,7 @@ _pre_bad() { printf "  %s✗%s %s\n" "$RED" "$R" "$*"; }
 _pre_fix() { printf "      %s%s%s\n" "$DIM" "$*" "$R"; }
 
 _pre_need_cmd() {
-  local cmd="$1" mac_fix="$2" deb_fix="$3" fedora_fix="$4"
+  local cmd="$1" mac_fix="$2" deb_fix="$3" fedora_fix="$4" arch_fix="$5"
   if command -v "$cmd" >/dev/null 2>&1; then
     _pre_ok "$cmd available"
     return 0
@@ -160,6 +162,7 @@ _pre_need_cmd() {
     macos)  _pre_fix "$mac_fix" ;;
     debian) _pre_fix "$deb_fix" ;;
     fedora) _pre_fix "$fedora_fix" ;;
+    arch)   _pre_fix "$arch_fix" ;;
   esac
   return 1
 }
@@ -267,11 +270,13 @@ preflight() {
   _pre_need_cmd curl \
     "/usr/bin/curl ships with macOS — your install is broken" \
     "sudo apt update && sudo apt install -y curl" \
-    "sudo dnf install -y curl" || fail=1
+    "sudo dnf install -y curl" \
+    "sudo pacman -S --needed curl" || fail=1
   _pre_need_cmd tar \
     "/usr/bin/tar ships with macOS — your install is broken" \
     "sudo apt install -y tar" \
-    "sudo dnf install -y tar" || fail=1
+    "sudo dnf install -y tar" \
+    "sudo pacman -S --needed tar" || fail=1
 
   _pre_home_writable    || fail=1
   _pre_github_reachable || fail=1
@@ -290,6 +295,10 @@ preflight() {
     fedora)
       _pre_sudo_linux                                                                 || fail=1
       _pre_need_cmd dnf  "" "" "this isn't a Fedora derivative — detect_os bug?"      || fail=1
+      ;;
+    arch)
+      _pre_sudo_linux                                                                    || fail=1
+      _pre_need_cmd pacman  "" "" "" "this isn't an Arch derivative — detect_os bug?"    || fail=1
       ;;
   esac
 
@@ -356,6 +365,23 @@ DNF_PACKAGES=(
   fontconfig unzip tar
   bat fd-find
   gh util-linux-user
+)
+
+# Arch (pacman). Everything Phoenix needs is in core/extra, so this list is fat
+# and install_linux_extras' command -v guards no-op the curl/GitHub installers.
+# Name mappings vs apt/dnf: gh→github-cli, fd-find→fd, python3→python. chsh ships
+# in util-linux (always present). Only lazyssh (AUR), zsh-fast-syntax-highlighting
+# and the Nerd Font are not packaged here — install_linux_extras handles those.
+PACMAN_PACKAGES=(
+  zsh tmux git curl wget ca-certificates
+  figlet fzf ripgrep btop tealdeer
+  zsh-autosuggestions
+  python
+  xclip wl-clipboard xdg-utils
+  fontconfig unzip tar
+  bat fd
+  github-cli eza ghostty
+  starship zoxide atuin lazygit lazydocker yazi neovim
 )
 
 NVIM_LINUX_TARBALL_URL_X86="https://github.com/neovim/neovim/releases/download/stable/nvim-linux-x86_64.tar.gz"
@@ -453,6 +479,38 @@ install_dnf_packages() {
   fi
   say "installing dnf packages (${#missing[@]} missing): ${missing[*]}"
   sudo_if_needed dnf install -y "$skipflag" "${missing[@]}"
+}
+
+# ---------- Linux (Arch) installers ----------
+
+install_pacman_packages() {
+  # Refresh the db first so the -Si availability check works on fresh installs.
+  sudo_if_needed pacman -Sy --noconfirm
+
+  local available=() skipped=()
+  for pkg in "${PACMAN_PACKAGES[@]}"; do
+    if pacman -Si "$pkg" >/dev/null 2>&1; then
+      available+=("$pkg")
+    else
+      skipped+=("$pkg")
+    fi
+  done
+  if (( ${#skipped[@]} > 0 )); then
+    warn "pacman packages not in this distro's repos (skipping): ${skipped[*]}"
+  fi
+
+  local missing=()
+  for pkg in "${available[@]}"; do
+    pacman -Q "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
+  done
+  if (( ${#missing[@]} == 0 )); then
+    say "pacman packages already installed (${#available[@]}/${#available[@]})"
+    return 0
+  fi
+  # Arch forbids partial upgrades: -Su (db already synced above) upgrades the
+  # system AND installs the targets in one transaction — i.e. a full -Syu.
+  say "installing pacman packages (${#missing[@]} missing): ${missing[*]}"
+  sudo_if_needed pacman -Su --needed --noconfirm "${missing[@]}"
 }
 
 # ---------- Linux (Debian/Ubuntu) installers ----------
@@ -738,6 +796,8 @@ install_ghostty_linux() {
     install_ghostty_fedora
     return $?
   fi
+  # Arch installs ghostty natively (PACMAN_PACKAGES) — skip the .deb/snap path.
+  [[ "$PHOENIX_OS" == arch ]] && return 0
   # The Ghostty snap is sandboxed even when advertised as classic, which
   # prevents `command = zsh -l` from finding /usr/bin/zsh on the host —
   # Ghostty silently falls back to bash and phoenix.zsh never sources.
@@ -937,6 +997,13 @@ install_packages_fedora() {
   install_linux_extras
 }
 
+install_packages_arch() {
+  say "installing pacman packages (full -Syu — Arch forbids partial upgrades)"
+  install_pacman_packages
+  say "installing Linux extras (lazyssh, zsh-fast-syntax-highlighting, Nerd Font, …)"
+  install_linux_extras
+}
+
 do_install() {
   detect_os
   preflight
@@ -945,6 +1012,7 @@ do_install() {
     macos)  install_packages_macos ;;
     debian) install_packages_debian ;;
     fedora) install_packages_fedora ;;
+    arch)   install_packages_arch ;;
   esac
 
   if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
@@ -988,7 +1056,7 @@ do_install() {
   local figlet_fonts=""
   case "$PHOENIX_OS" in
     macos)  figlet_fonts="$(brew --prefix 2>/dev/null)/share/figlet/fonts" ;;
-    debian|fedora)
+    debian|fedora|arch)
       for d in /usr/share/figlet /usr/share/figlet/fonts; do
         [[ -d "$d" ]] && figlet_fonts="$d" && break
       done
@@ -1291,6 +1359,32 @@ do_doctor() {
       else bad "ghostty not in PATH — install manually if needed"; fail=1; fi
       doctor_de_shortcuts
       ;;
+    arch)
+      printf "\n%spacman packages%s\n" "$DIM" "$R"
+      for pkg in "${PACMAN_PACKAGES[@]}"; do
+        if pacman -Q "$pkg" >/dev/null 2>&1; then ok "$pkg"; else bad "$pkg"; fail=1; fi
+      done
+      printf "\n%sLinux extras%s\n" "$DIM" "$R"
+      local tool
+      for tool in starship zoxide atuin eza tldr lazygit lazydocker yazi nvim lazyssh; do
+        if command -v "$tool" >/dev/null; then ok "$tool ($(command -v "$tool"))"
+        else bad "$tool not in PATH"; fail=1; fi
+      done
+      if [[ -d "$HOME/.zsh/plugins/fast-syntax-highlighting" ]]; then
+        ok "zsh-fast-syntax-highlighting"
+      else
+        bad "zsh-fast-syntax-highlighting missing"; fail=1
+      fi
+      if [[ -d "$HOME/.local/share/fonts/ComicShannsMono" ]] \
+         && ls "$HOME/.local/share/fonts/ComicShannsMono"/*.ttf >/dev/null 2>&1; then
+        ok "ComicShannsMono Nerd Font"
+      else
+        bad "ComicShannsMono Nerd Font missing"; fail=1
+      fi
+      if command -v ghostty >/dev/null; then ok "ghostty ($(command -v ghostty))"
+      else bad "ghostty not in PATH — install manually if needed"; fail=1; fi
+      doctor_de_shortcuts
+      ;;
   esac
 
   printf "\n%sshell wiring%s\n" "$DIM" "$R"
@@ -1307,7 +1401,7 @@ do_doctor() {
   local figlet_fonts=""
   case "$PHOENIX_OS" in
     macos) figlet_fonts="$(brew --prefix 2>/dev/null)/share/figlet/fonts" ;;
-    debian|fedora)
+    debian|fedora|arch)
       for d in /usr/share/figlet /usr/share/figlet/fonts; do
         [[ -d "$d" ]] && figlet_fonts="$d" && break
       done
