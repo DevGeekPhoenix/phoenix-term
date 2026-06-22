@@ -152,7 +152,7 @@ _pre_bad() { printf "  %s✗%s %s\n" "$RED" "$R" "$*"; }
 _pre_fix() { printf "      %s%s%s\n" "$DIM" "$*" "$R"; }
 
 _pre_need_cmd() {
-  local cmd="$1" mac_fix="$2" deb_fix="$3" fedora_fix="$4" arch_fix="$5"
+  local cmd="${1:-}" mac_fix="${2:-}" deb_fix="${3:-}" fedora_fix="${4:-}" arch_fix="${5:-}"
   if command -v "$cmd" >/dev/null 2>&1; then
     _pre_ok "$cmd available"
     return 0
