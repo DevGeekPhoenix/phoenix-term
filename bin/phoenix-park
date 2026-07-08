@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Park the current tab: move its tmux window into the phoenix-parked holding session.
+
+set -e
+
+[ -n "$TMUX" ] || exit 0
+
+window="${1:-$(tmux display-message -p '#{window_id}')}"
+nwin="${2:-$(tmux display-message -p '#{session_windows}')}"
+
+if [ "${nwin:-1}" -le 1 ]; then
+  tmux display-message "  can't park the only tab — open another first (Ctrl-A c)"
+  exit 0
+fi
+
+if tmux has-session -t phoenix-parked 2>/dev/null; then
+  tmux move-window -s "$window" -t phoenix-parked:
+else
+  # Create + protect atomically: a bare detached session is reaped instantly
+  # by the global destroy-unattached on before a separate set-option can land.
+  tmux new-session -d -s phoenix-parked \; set-option -t phoenix-parked destroy-unattached off
+  def=$(tmux display-message -p -t phoenix-parked: '#{window_id}')
+  tmux move-window -s "$window" -t phoenix-parked:
+  tmux kill-window -t "$def"
+fi

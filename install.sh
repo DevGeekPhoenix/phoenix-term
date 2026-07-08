@@ -325,6 +325,7 @@ LINKS=(
   "bin/phoenix-tmux-rebalance|$HOME/.local/bin/phoenix-tmux-rebalance"
   "bin/phoenix-clip|$HOME/.local/bin/phoenix-clip"
   "bin/phoenix-web|$HOME/.local/bin/phoenix-web"
+  "bin/phoenix-park|$HOME/.local/bin/phoenix-park"
   "bin/phoenix-resume|$HOME/.local/bin/phoenix-resume"
   "bin/phoenix-release-notes|$HOME/.local/bin/phoenix-release-notes"
   "nvim/colors/phoenix.lua|$HOME/.config/nvim/colors/phoenix.lua"
