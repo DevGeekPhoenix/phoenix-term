@@ -80,7 +80,8 @@ TABS = [
             ("Ctrl-A n / p", "Next / previous tab"),
             ("Ctrl-A 1–9", "Jump to tab N"),
             ("Ctrl-A X", "Close current tab"),
-            ("Ctrl-A d", "Detach (session keeps running)"),
+            ("Ctrl-A d", "Park tab — detach but keep it running"),
+            ("Ctrl-A a", "Resume a parked tab"),
         ]),
         ("Copy mode", [
             ("Ctrl-A [  /  Enter", "Enter copy mode (scroll + select)"),

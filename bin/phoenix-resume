@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Resume a parked (detached) Phoenix session, or kill it.
+
+set -e
+
+[ -n "$TMUX" ] || { echo "phoenix-resume must be run inside tmux"; exit 1; }
+
+cur=$(tmux display-message -p '#S')
+
+list() {
+  tmux list-sessions -F '#{session_attached}	#{session_name}	#{session_windows}' 2>/dev/null \
+    | awk -F'\t' -v cur="$cur" '$1=="0" && $2 ~ /^phoenix-/ && $2!=cur && $2!="phoenix-scratch" {
+        printf "%s\t%s  (%s %s)\n", $2, $2, $3, ($3==1 ? "tab" : "tabs") }'
+}
+
+sea=$'\e[38;2;32;178;170m'; dim=$'\e[38;2;120;120;120m'; r=$'\e[0m'
+
+if [ -z "$(list)" ]; then
+  printf '\n  %sNo parked sessions.%s\n\n  %sCtrl-A d%s parks the current session so you can resume it here.\n\n  press any key…' \
+    "$sea" "$r" "$dim" "$r"
+  read -rsn1 _ || true
+  exit 0
+fi
+
+pick=$(list | fzf --with-nth=2.. --delimiter='\t' \
+  --prompt='resume ▸ ' --header='enter resume · ctrl-x kill' --reverse --height=100% \
+  --color='fg+:#20b2aa,prompt:#20b2aa,header:#7a828c,pointer:#20b2aa,marker:#20b2aa,border:#20b2aa,info:#7a828c' \
+  --expect=ctrl-x) || exit 0
+
+key=$(printf '%s\n' "$pick" | sed -n '1p')
+target=$(printf '%s\n' "$pick" | sed -n '2p' | cut -f1)
+[ -n "$target" ] || exit 0
+
+if [ "$key" = "ctrl-x" ]; then
+  tmux kill-session -t "$target"
+  exec "$0"
+fi
+
+tmux switch-client -t "$target"
