@@ -36,7 +36,7 @@ One command installs everything: terminal, font, shell plugins, editor, sidebar,
 | Shell                | zsh + Oh-My-Zsh + zsh-autosuggestions + fast-syntax-highlight          |
 | Prompt               | Starship with Warp-style rounded pills                                 |
 | Multiplexer          | tmux (TPM + tmux-resurrect + tmux-continuum + extrakto + tmux-open + tmux-cowboy) — Ghostty tabs are tmux windows; each Ghostty window is its own session |
-| Sidebar              | `phoenix-sysmon` — CPU / memory / disk / network / battery + clock     |
+| Sidebar              | `phoenix-sysmon` — graphical dashboard: Orbitron LED clock, CPU/memory/disk/battery ring gauges, download/upload dials, live CPU temp, public IP |
 | Welcome              | Per-shell figlet banner ("ANSI Shadow"), optionally pinned as a pane   |
 | Editor               | Neovim + LazyVim with the `phoenix` Black-and-Gold colorscheme         |
 | Fuzzy / nav / search | fzf · zoxide · fd · ripgrep · eza · bat · atuin · yazi · btop          |
@@ -114,7 +114,7 @@ Open a new Ghostty window (or run `exec zsh`):
 
 - A figlet **welcome banner** with your name, pinned across the top of every tab
 - A **tab strip** on the banner — rounded powerline pills, one per open tab (active in teal)
-- A **36-column system-monitor sidebar** on the right (live clock, CPU, memory, disk, network, battery)
+- A **36-column graphical system-monitor sidebar** on the right — an Orbitron LED clock, ring gauges for CPU / memory / disk / battery, live download/upload dials, CPU temperature, and your public IP (all drawn with Kitty graphics; toggle with `Ctrl-A S`)
 - A **tmux session per Ghostty window** — `Cmd-T` (mac) / `Ctrl-Shift-T` (Linux) opens a tab (tmux window) inside it; a new Ghostty window gets its own independent session
 - A **full-width divider** above the active prompt (redraws on resize) that collapses to a compact `◆ ◆ ◆` marker in scrollback — past dividers can never wrap or break on resize
 - The divider/marker shows the **previous command's runtime** in gold (e.g. `─── · ◆ 2s ◆ · ───`) when it ran longer than ~1.5s
@@ -245,6 +245,7 @@ Tabs are **tmux windows** in the Ghostty window's own session — pills on the b
 | `Cmd-T`           | `Ctrl-Shift-T` / `Super-T`             | New tab (tmux window)               |
 | `Cmd-W`           | `Ctrl-Shift-W` / `Super-W`             | Close current tab                   |
 | `Cmd-Alt-←` / `→` | `Ctrl-Shift-←` / `→` · `Super-Alt-←` / `→` | Previous / next tab             |
+| `Cmd-Alt-,` / `.` | `Ctrl-Shift-,` / `.`                   | Move tab left / right (reorder)     |
 | `Ctrl-1`…`Ctrl-9` | `Ctrl-1`…`Ctrl-9`                      | Jump to tab _N_                     |
 | `Cmd-Shift-Enter` | `Ctrl-Shift-Enter` / `Super-Shift-Enter` | Toggle fullscreen                 |
 | `Ctrl-L`          | `Ctrl-L`                               | Clear screen + wipe tmux scrollback |
@@ -267,6 +268,7 @@ Hit `Ctrl-A`, **release**, then the next key.
 | `Ctrl-A ↑/↓/←/→`      | Split pane above / below / left / right            |
 | `Ctrl-A c`            | New tab (tmux window) — same as `Cmd-T`            |
 | `Ctrl-A n` / `p`      | Next / previous tab                                |
+| `Ctrl-A <` / `>`      | Move current tab left / right (reorder)            |
 | `Ctrl-A 1`–`9`        | Jump to tab _N_                                    |
 | `Ctrl-A h/j/k/l`      | Move between panes (vim-style)                     |
 | `Ctrl-A Shift-↑/↓/←/→`| Move between panes (arrow-style)                   |
@@ -276,7 +278,8 @@ Hit `Ctrl-A`, **release**, then the next key.
 | `Ctrl-A Tab`          | **extrakto** — fuzzy-grab any path/URL/word from scrollback (insert or copy) |
 | `Ctrl-A g`            | Floating **scratch terminal** (toggle — survives closing) |
 | `Ctrl-A *`            | Force-kill (SIGKILL) the hung process in the current pane |
-| `Ctrl-A d`            | Detach from session (session keeps running)        |
+| `Ctrl-A d`            | **Park** the current tab (stash it to a hidden holding session) |
+| `Ctrl-A a`            | **Resume** a parked tab (popup picker)             |
 | Mouse drag       | Selects in copy-mode (mouse mode is on by default) |
 
 ### Copy mode (after `Ctrl-A [`)
@@ -357,6 +360,7 @@ Two layers:
 | `PHOENIX_BG_COLOR`      | text | `#0c0f11`     | Background color when `BG_MODE=color`                        |
 | `PHOENIX_NVIM_DEFAULT`  | bool | `1`           | Make `nvim` the default `$EDITOR` (also aliases `vi`/`vim`)  |
 | `PHOENIX_AUTO_TMUX`     | enum | `ghostty`     | Auto-start tmux (tabs + sysmon): `ghostty` only, `always`, or `never` |
+| `PHOENIX_FONT_SIZE`     | text | `auto`        | Ghostty font size — `auto` (14 on macOS, 12 on Linux) or a fixed number |
 
 ### Set them
 
@@ -566,11 +570,15 @@ phoenix-term/
 │   ├── phoenix-banner               → ~/.local/bin/phoenix-banner       (sticky banner pane)
 │   ├── phoenix-tmux-init            → ~/.local/bin/phoenix-tmux-init
 │   ├── phoenix-tmux-rebalance       → ~/.local/bin/phoenix-tmux-rebalance
+│   ├── phoenix-park                 → ~/.local/bin/phoenix-park          (park a tab)
+│   ├── phoenix-resume               → ~/.local/bin/phoenix-resume        (resume a parked tab)
 │   ├── phoenix-clip                 → ~/.local/bin/phoenix-clip         (cross-platform clipboard)
 │   ├── phoenix-web                  → ~/.local/bin/phoenix-web          (the `web` command)
 │   └── phoenix-release-notes        → ~/.local/bin/phoenix-release-notes (what's-new popup)
 └── fonts/
-    └── ANSI_Shadow.flf              welcome-banner figlet font
+    ├── ANSI_Shadow.flf              welcome-banner figlet font
+    ├── orbitron-clock.json          Orbitron clock glyph atlas (sidebar)
+    └── phoenix-rings.json           ring/dial gauge atlas (sidebar)
 ```
 
 Edit any file in this repo and reload the relevant tool — every config in `~/` is a symlink back here.

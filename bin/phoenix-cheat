@@ -78,6 +78,7 @@ TABS = [
         ("Windows / tabs", [
             ("Ctrl-A c", "New tab (tmux window)"),
             ("Ctrl-A n / p", "Next / previous tab"),
+            ("Ctrl-A < / >", "Move tab left / right"),
             ("Ctrl-A 1–9", "Jump to tab N"),
             ("Ctrl-A X", "Close current tab"),
             ("Ctrl-A d", "Park (stash) the current tab"),
@@ -112,6 +113,7 @@ TABS = [
              "Close current tab" + (" · or Super-W" if SUP_W else "")),
             (k("Cmd-Alt-← / →", "Ctrl-Shift-← / →"),
              "Previous / next tab" + (" · or Super-Alt-←/→" if SUP_NAV else "")),
+            (k("Cmd-Alt-, / .", "Ctrl-Shift-, / ."), "Move tab left / right"),
             ("Ctrl-1…9", "Jump to tab N"),
         ]),
         ("Window", [
@@ -205,6 +207,7 @@ TABS = [
             ("PHOENIX_BANNER_STICKY", "Banner: sticky / inline / off"),
             ("PHOENIX_AUTO_TMUX", "Tabs + sidebar: ghostty / always / never"),
             ("PHOENIX_BG_MODE", "Background: image / color"),
+            ("PHOENIX_FONT_SIZE", "Font size: auto (14 mac / 12 Linux) or a number"),
         ]),
     ]),
 ]

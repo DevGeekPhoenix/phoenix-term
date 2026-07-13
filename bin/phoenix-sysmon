@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-# Right-sidebar system monitor. Pure stdlib, no Nerd Font dependencies.
 
-import glob, os, re, sys, time, signal, subprocess, shutil
+import glob, os, re, sys, time, signal, subprocess, shutil, json, tempfile, fcntl, zlib, base64, math
 from collections import deque
 
 IS_MACOS = sys.platform == "darwin"
@@ -48,8 +47,6 @@ def _apply_pane_bg():
         except Exception:
             pass
 
-_apply_pane_bg()
-
 # ── Palette ────────────────────────────────────────────────────
 
 SEA    = "\033[38;2;32;178;170m"
@@ -86,12 +83,52 @@ def sh(cmd):
 
 # ── Metric collectors ─────────────────────────────────────────
 
-_PROC_STAT_PREV = {"t": 0.0, "idle": 0, "total": 0}
+_PROC_STAT_PREV = {"idle": 0, "total": 0}
+_CPU_PREV = {"idle": 0, "total": 0}
 
-def _cpu_pct_macos():
+def _macos_cpu_ticks():
+    return None
+
+if IS_MACOS:
+    try:
+        import ctypes, ctypes.util
+        _libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+        _libc.mach_host_self.restype = ctypes.c_uint
+
+        class _host_cpu_load_info(ctypes.Structure):
+            _fields_ = [("cpu_ticks", ctypes.c_uint * 4)]
+
+        _HOST_CPU_LOAD_INFO = 3
+
+        def _macos_cpu_ticks():  # noqa: F811
+            info = _host_cpu_load_info()
+            count = ctypes.c_uint(4)
+            kr = _libc.host_statistics(_libc.mach_host_self(), _HOST_CPU_LOAD_INFO,
+                                       ctypes.byref(info), ctypes.byref(count))
+            if kr != 0:
+                return None
+            t = info.cpu_ticks
+            return (t[0] + t[1] + t[2] + t[3], t[2])
+    except Exception:
+        pass
+
+def _cpu_pct_macos_top():
     out = sh("top -l 1 -n 0 | grep 'CPU usage'")
     m = re.search(r'([\d.]+)%\s+idle', out)
     return max(0.0, 100 - float(m.group(1))) if m else 0.0
+
+def _cpu_pct_macos():
+    tk = _macos_cpu_ticks()
+    if tk is None:
+        return _cpu_pct_macos_top()
+    total, idle = tk
+    prev = _CPU_PREV
+    d_idle = idle - prev["idle"]
+    d_total = total - prev["total"]
+    prev["idle"], prev["total"] = idle, total
+    if d_total <= 0:
+        return 0.0
+    return max(0.0, min(100.0, (1.0 - d_idle / d_total) * 100.0))
 
 def _cpu_pct_linux():
     try:
@@ -155,21 +192,12 @@ def _mem_info_linux():
 
 mem_info = _mem_info_macos if IS_MACOS else _mem_info_linux
 
-def _disk_info_macos():
-    # APFS quirk: `df /` reports only the small read-only system volume on
-    # Catalina+. Real user data lives at /System/Volumes/Data.
-    target = "/System/Volumes/Data" if os.path.exists("/System/Volumes/Data") else "/"
-    out = sh(f"df -k {target}").splitlines()
-    if len(out) < 2: return (0, 0, 0, 0)
-    p = out[1].split()
-    if len(p) < 4: return (0, 0, 0, 0)
-    total = int(p[1]); used = int(p[2]); avail = int(p[3])
-    return (avail / 1024**2, total / 1024**2, used / total * 100 if total else 0,
-            used / 1024**2)
-
-def _disk_info_linux():
+def disk_info():
+    # APFS quirk: `/` is a tiny read-only system volume on Catalina+, so read
+    # real user data from /System/Volumes/Data. statvfs everywhere — no `df`.
+    target = "/System/Volumes/Data" if IS_MACOS and os.path.exists("/System/Volumes/Data") else "/"
     try:
-        s = os.statvfs("/")
+        s = os.statvfs(target)
     except OSError:
         return (0, 0, 0, 0)
     total = s.f_blocks * s.f_frsize
@@ -177,8 +205,6 @@ def _disk_info_linux():
     used  = (s.f_blocks - s.f_bfree) * s.f_frsize
     if total == 0: return (0, 0, 0, 0)
     return (avail / 1024**3, total / 1024**3, used / total * 100, used / 1024**3)
-
-disk_info = _disk_info_macos if IS_MACOS else _disk_info_linux
 
 def _net_bytes_macos():
     out = sh("netstat -ibn")
@@ -216,6 +242,56 @@ def _net_bytes_linux():
 
 net_bytes = _net_bytes_macos if IS_MACOS else _net_bytes_linux
 
+_PUBIP = {"v": None, "started": False}
+
+def _fetch_pub_ip():
+    import urllib.request
+    for url in ("https://api.ipify.org", "https://icanhazip.com", "https://ifconfig.me/ip"):
+        try:
+            with urllib.request.urlopen(url, timeout=2.5) as r:
+                ip = r.read(64).decode("ascii", "ignore").strip()
+            p = ip.split(".")
+            if len(p) == 4 and all(x.isdigit() and 0 <= int(x) <= 255 for x in p):
+                return ip
+        except Exception:
+            continue
+    return None
+
+def _local_net_sig():
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("1.1.1.1", 80))
+            return s.getsockname()[0]
+        finally:
+            s.close()
+    except Exception:
+        return None
+
+def _pubip_loop():
+    last_sig, last_fetch = None, 0.0
+    while True:
+        sig = _local_net_sig()
+        now = time.monotonic()
+        if sig != last_sig or now - last_fetch >= 600:
+            ip = _fetch_pub_ip()
+            if ip:
+                _PUBIP["v"] = ip
+                last_sig, last_fetch = sig, now
+                time.sleep(2)
+            else:
+                time.sleep(15)                     
+        else:
+            time.sleep(2)
+
+def public_ip():
+    if not _PUBIP["started"]:
+        _PUBIP["started"] = True
+        import threading
+        threading.Thread(target=_pubip_loop, daemon=True).start()
+    return _PUBIP["v"]
+
 def _battery_info_macos():
     out = sh("pmset -g batt")
     if not out: return (None, False)
@@ -240,112 +316,163 @@ def _battery_info_linux():
 
 battery_info = _battery_info_macos if IS_MACOS else _battery_info_linux
 
-def uptime_str():
-    out = sh("uptime").strip()
-    m = re.search(r'up\s+(.+?),\s+\d+\s+user', out)
-    return m.group(1).strip() if m else "?"
-
 def loadavg():
     try: return os.getloadavg()
     except Exception: return (0, 0, 0)
 
-def hostname_short():
-    return sh("hostname -s").strip() or "host"
+def _cpu_model_raw():
+    try:
+        if IS_MACOS:
+            return sh("sysctl -n machdep.cpu.brand_string") or ""
+        with open("/proc/cpuinfo") as f:
+            for line in f:
+                if line.startswith(("model name", "Model name", "cpu model")):
+                    return line.split(":", 1)[1].strip()
+    except Exception:
+        pass
+    return ""
 
-# 4w × 5h block-art glyphs. tmux strips DEC double-height escapes across panes
-# so a hand-rolled font is the only way to get chunky digits in the sidebar.
-DIGITS = {
-    '0': ["████", "█  █", "█  █", "█  █", "████"],
-    '1': ["   █", "   █", "   █", "   █", "   █"],
-    '2': ["████", "   █", "████", "█   ", "████"],
-    '3': ["████", "   █", "████", "   █", "████"],
-    '4': ["█  █", "█  █", "████", "   █", "   █"],
-    '5': ["████", "█   ", "████", "   █", "████"],
-    '6': ["████", "█   ", "████", "█  █", "████"],
-    '7': ["████", "   █", "   █", "   █", "   █"],
-    '8': ["████", "█  █", "████", "█  █", "████"],
-    '9': ["████", "█  █", "████", "   █", "████"],
-    ':': [" ", "█", " ", "█", " "],
-}
+def cpu_model():
+    s = re.sub(r'\((?:R|TM|r|tm)\)', '', _cpu_model_raw())
+    s = re.sub(r'\bCPU\b|\bProcessor\b|\d+-Core', '', s)
+    s = re.sub(r'@.*', '', s)
+    return re.sub(r'\s+', ' ', s).strip()
 
-def clock_rows():
-    s = time.strftime("%H:%M:%S")
-    rows = ["", "", "", "", ""]
-    for i, ch in enumerate(s):
-        pat = DIGITS.get(ch)
-        if not pat: continue
-        for r in range(5):
-            rows[r] += pat[r]
-            if i < len(s) - 1:
-                rows[r] += " "
-    return rows
+_SMC = {"init": False, "read": None, "keys": ()}
+
+def _smc_init():
+    if _SMC["init"]:
+        return
+    _SMC["init"] = True
+    if not IS_MACOS:
+        return
+    try:
+        import ctypes, struct
+        iokit = ctypes.CDLL("/System/Library/Frameworks/IOKit.framework/IOKit")
+        libc  = ctypes.CDLL("/usr/lib/libSystem.dylib")
+
+        class _V(ctypes.Structure):
+            _fields_ = [("a", ctypes.c_ubyte * 4), ("r", ctypes.c_ushort)]
+        class _P(ctypes.Structure):
+            _fields_ = [("v", ctypes.c_ushort), ("l", ctypes.c_ushort),
+                        ("c", ctypes.c_uint), ("g", ctypes.c_uint), ("m", ctypes.c_uint)]
+        class _K(ctypes.Structure):
+            _fields_ = [("dataSize", ctypes.c_uint), ("dataType", ctypes.c_uint),
+                        ("attr", ctypes.c_ubyte)]
+        class _D(ctypes.Structure):
+            _fields_ = [("key", ctypes.c_uint), ("vers", _V), ("plim", _P), ("keyInfo", _K),
+                        ("result", ctypes.c_ubyte), ("status", ctypes.c_ubyte),
+                        ("data8", ctypes.c_ubyte), ("data32", ctypes.c_uint),
+                        ("bytes", ctypes.c_ubyte * 32)]
+
+        iokit.IOServiceMatching.restype = ctypes.c_void_p
+        iokit.IOServiceMatching.argtypes = [ctypes.c_char_p]
+        iokit.IOServiceGetMatchingService.restype = ctypes.c_uint
+        iokit.IOServiceGetMatchingService.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+        iokit.IOServiceOpen.restype = ctypes.c_int
+        iokit.IOServiceOpen.argtypes = [ctypes.c_uint, ctypes.c_uint, ctypes.c_uint,
+                                        ctypes.POINTER(ctypes.c_uint)]
+        iokit.IOConnectCallStructMethod.restype = ctypes.c_int
+        iokit.IOConnectCallStructMethod.argtypes = [ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p,
+                                                    ctypes.c_size_t, ctypes.c_void_p,
+                                                    ctypes.POINTER(ctypes.c_size_t)]
+        task = ctypes.c_uint.in_dll(libc, "mach_task_self_").value
+        svc = iokit.IOServiceGetMatchingService(0, iokit.IOServiceMatching(b"AppleSMC"))
+        if not svc:
+            return
+        conn = ctypes.c_uint(0)
+        if iokit.IOServiceOpen(svc, task, 0, ctypes.byref(conn)) != 0:
+            return
+        conn = conn.value
+        SZ = ctypes.sizeof(_D)
+        FLT = (ord('f') << 24) | (ord('l') << 16) | (ord('t') << 8) | ord(' ')
+
+        def call(inp):
+            out = _D(); osz = ctypes.c_size_t(SZ)
+            iokit.IOConnectCallStructMethod(conn, 2, ctypes.byref(inp), SZ,
+                                            ctypes.byref(out), ctypes.byref(osz))
+            return out
+
+        def temp_of(key):
+            inp = _D(); inp.key = key; inp.data8 = 9
+            o = call(inp); size = o.keyInfo.dataSize; dtype = o.keyInfo.dataType
+            if dtype != FLT or size < 4:
+                return None
+            inp = _D(); inp.key = key; inp.data8 = 5
+            inp.keyInfo.dataSize = size; inp.keyInfo.dataType = dtype
+            o = call(inp)
+            return struct.unpack("<f", bytes(bytearray(o.bytes)[:4]))[0]
+
+        KEYKEY = (ord('#')<<24)|(ord('K')<<16)|(ord('E')<<8)|ord('Y')
+        ki = _D(); ki.key = KEYKEY; ki.data8 = 9
+        o = call(ki)
+        rq = _D(); rq.key = KEYKEY; rq.data8 = 5
+        rq.keyInfo.dataSize = o.keyInfo.dataSize; rq.keyInfo.dataType = o.keyInfo.dataType
+        count = struct.unpack(">I", bytes(bytearray(call(rq).bytes)[:4]))[0]
+
+        keys = []
+        for i in range(count):
+            q = _D(); q.data8 = 8; q.data32 = i
+            r = call(q); k = r.key
+            nm = chr((k>>24)&255) + chr((k>>16)&255) + chr((k>>8)&255) + chr(k&255)
+            if nm[:2] in ("Tp", "Te"):
+                v = temp_of(k)
+                if v and 5.0 < v < 120.0:
+                    keys.append(k)
+        _SMC["keys"] = tuple(keys)
+        _SMC["read"] = temp_of
+    except Exception:
+        _SMC["read"] = None
+
+def _smc_cpu_temp():
+    _smc_init()
+    rd = _SMC["read"]
+    if not rd or not _SMC["keys"]:
+        return None
+    vals = []
+    for k in _SMC["keys"]:
+        try:
+            v = rd(k)
+            if v and 5.0 < v < 120.0:
+                vals.append(v)
+        except Exception:
+            pass
+    return sum(vals) / len(vals) if vals else None
+
+def cpu_temp():
+    if IS_MACOS:
+        return _smc_cpu_temp()
+    try:
+        for base in sorted(glob.glob("/sys/class/hwmon/hwmon*")):
+            try:
+                with open(os.path.join(base, "name")) as f:
+                    name = f.read().strip()
+            except OSError:
+                continue
+            if name in ("coretemp", "k10temp", "zenpower", "cpu_thermal"):
+                for tf in sorted(glob.glob(os.path.join(base, "temp*_input"))):
+                    with open(tf) as f:
+                        return int(f.read().strip()) / 1000.0
+        for z in sorted(glob.glob("/sys/class/thermal/thermal_zone*")):
+            try:
+                with open(os.path.join(z, "type")) as f:
+                    ty = f.read().strip().lower()
+                if "cpu" in ty or "x86_pkg" in ty or "soc" in ty:
+                    with open(os.path.join(z, "temp")) as f:
+                        return int(f.read().strip()) / 1000.0
+            except OSError:
+                continue
+    except Exception:
+        pass
+    return None
 
 # ── Visual primitives ──────────────────────────────────────────
-
-EIGHTHS = "▁▂▃▄▅▆▇█"
-PARTIAL = "▏▎▍▌▋▊▉█"
-
-DN = "\033[1;3m"
-
-_DIGIT_RUN = re.compile(r'\d+(?:\.\d+)?')
-
-def digitize(s, base):
-    return _DIGIT_RUN.sub(lambda m: f"{DN}{m.group()}{R}{base}", s)
-
-def color_for(pct, inverse=False):
-    if inverse:
-        if pct < 20: return RED
-        if pct < 40: return YEL
-        return SEA
-    if pct >= 85: return RED
-    if pct >= 65: return YEL
-    return SEA
-
-def smooth_bar(pct, w, inverse=False):
-    pct = max(0.0, min(100.0, pct))
-    color = color_for(pct, inverse)
-    units = pct / 100.0 * w * 8
-    full = int(units // 8); rem = int(units - full * 8)
-    bar = "█" * full
-    if rem > 0 and full < w:
-        bar += PARTIAL[rem - 1]; empty = w - full - 1
-    else:
-        empty = w - full
-    return f"{color}{bar}{DIM}{'▒' * empty}{R}"
-
-def sparkline(values, w, max_val=None):
-    if not values: return " " * w
-    vals = list(values)[-w:]
-    if len(vals) < w: vals = [0] * (w - len(vals)) + vals
-    m = max_val if max_val is not None else (max(vals) or 1)
-    m = max(m, 1)
-    return "".join(EIGHTHS[min(7, int(round(v / m * 7)))] for v in vals)
 
 def fmt_rate(bps):
     if bps < 1024:    return f"{bps:5.0f}  B/s"
     if bps < 1024**2: return f"{bps/1024:5.1f} KB/s"
     if bps < 1024**3: return f"{bps/1024**2:5.1f} MB/s"
     return f"{bps/1024**3:5.1f} GB/s"
-
-def strip_ansi(s): return re.sub(r'\x1b\[[0-9;]*m', '', s)
-def vlen(s): return len(strip_ansi(s))
-
-def section_top(label, value, w, accent=SEA):
-    head_text = f"╭─ {label}"
-    head = f"{accent}{B}{head_text}{R}"
-    if value:
-        val_text = value
-        val = f"{accent}{B}{val_text}{R}"
-        fill = max(1, w - 3 - len(head_text) - len(val_text))
-        return f" {head}{accent} {'─' * fill} {val}"
-    fill = max(1, w - 2 - len(head_text))
-    return f" {head}{accent} {'─' * fill}{R}"
-
-def cont(content, accent=SEA):
-    return f" {accent}│{R}  {content}"
-
-def section_end(accent=SEA):
-    return f" {accent}╰{R}"
 
 def _center_pad(w, item_w):
     # Round-to-nearest so an odd amount of spare space biases toward EQUAL
@@ -359,19 +486,15 @@ def header_block(w):
     out = [""]
 
     title_text = " ".join(PHOENIX_NAME.upper())
-    title = f"{SEA}{B}{title_text}{R}"
     t_pad = _center_pad(w, len(title_text))
-    out.append(f"{' ' * t_pad}{title}")
+    out.append(f"{' ' * t_pad}{SEA}{B}{title_text}{R}")
     out.append("")
 
-    rows = clock_rows()
-    cw = len(rows[0]) if rows else 0
-    c_pad = _center_pad(w, cw)
-    for row in rows:
-        out.append(f"{' ' * c_pad}{SEA}{B}{row}{R}")
+    if image_clock_active():
+        out += image_clock_lines(w)
     out.append("")
 
-    date_text = time.strftime("%a  %d %b %Y")
+    date_text = time.strftime("%a · %d %b %Y")
     d_pad = _center_pad(w, len(date_text))
     out.append(f"{' ' * d_pad}{MUTED}{date_text}{R}")
     out.append("")
@@ -379,7 +502,124 @@ def header_block(w):
     out.append(rule)
     return out
 
-# ── Main draw ──────────────────────────────────────────────────
+# ── Orbitron image clock (Kitty graphics, unicode placeholders) ────
+
+_ATLAS_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+    "fonts", "orbitron-clock.json")
+
+def _load_atlas():
+    try:
+        with open(_ATLAS_PATH) as f:
+            a = json.load(f)
+        glyphs = {ch: (g["w"], g["h"], zlib.decompress(base64.b64decode(g["rgba"])))
+                  for ch, g in a["glyphs"].items()}
+        return a["box_h"], glyphs
+    except Exception:
+        return None, None
+
+_BOX_H, _GLYPHS = _load_atlas()
+
+_DIA = [0x0305, 0x030D, 0x030E, 0x0310, 0x0312, 0x033D, 0x033E, 0x033F, 0x0346,
+        0x034A, 0x034B, 0x034C, 0x0350, 0x0351, 0x0352, 0x0357, 0x035B, 0x0363,
+        0x0364, 0x0365, 0x0366, 0x0367, 0x0368, 0x0369, 0x036A, 0x036B, 0x036C,
+        0x036D, 0x036E, 0x036F, 0x0483, 0x0484, 0x0485, 0x0486, 0x0487]
+_PH = chr(0x10EEEE)
+_CLK_ROWS = 3
+_CLK_GAP = 4
+_CLK_MAXCOLS = len(_DIA)
+
+def _img_id():
+    n = 0
+    for c in os.environ.get("TMUX_PANE", ""):
+        if c.isdigit():
+            n = n * 10 + int(c)
+    return 1000 + (n % 7000) * 8
+
+_IMG_ID = _img_id()
+_clk = {"on": None, "key": None}
+
+def image_clock_active():
+    if _clk["on"] is not None:
+        return _clk["on"]
+    on = False
+    if _GLYPHS and os.environ.get("TMUX"):
+        try:
+            r = subprocess.run(
+                ["tmux", "display-message", "-p", "#{client_termname}"],
+                capture_output=True, text=True, timeout=1)
+            on = "ghostty" in r.stdout.lower()
+        except Exception:
+            on = False
+    if on:
+        pane = os.environ.get("TMUX_PANE", "")
+        args = ["tmux", "set", "-p"] + (["-t", pane] if pane else []) + \
+               ["allow-passthrough", "on"]
+        try:
+            subprocess.run(args, check=False, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+    _clk["on"] = on
+    return on
+
+def _clock_geom(w):
+    cols = max(8, min(w - 2, _CLK_MAXCOLS))
+    left = (w - cols) // 2 + 1
+    return cols, _CLK_ROWS, left
+
+def _pt(seq):
+    return "\033Ptmux;" + seq.replace("\033", "\033\033") + "\033\\"
+
+def _kitty(cmd, payload=""):
+    return f"\033_G{cmd};{payload}\033\\"
+
+def _composite(text):
+    imgs = [_GLYPHS[c] for c in text]
+    W = sum(g[0] for g in imgs) + _CLK_GAP * (len(imgs) - 1)
+    canvas = bytearray(W * _BOX_H * 4)
+    x = 0
+    for gw, gh, data in imgs:
+        for row in range(_BOX_H):
+            dst = (row * W + x) * 4
+            canvas[dst:dst + gw * 4] = data[row * gw * 4:(row + 1) * gw * 4]
+        x += gw + _CLK_GAP
+    return W, _BOX_H, bytes(canvas)
+
+def ensure_clock_image(w):
+    cols, rows, _ = _clock_geom(w)
+    key = (time.strftime("%H:%M:%S"), cols, rows)
+    if _clk["key"] == key:
+        return ""
+    _clk["key"] = key
+    W, H, rgba = _composite(key[0])
+    b64 = base64.b64encode(zlib.compress(rgba, 6)).decode()
+    chunks = [b64[i:i + 4096] for i in range(0, len(b64), 4096)] or [""]
+    out = []
+    for idx, ch in enumerate(chunks):
+        more = 1 if idx < len(chunks) - 1 else 0
+        cmd = (f"a=t,f=32,s={W},v={H},o=z,i={_IMG_ID},q=2,m={more}"
+               if idx == 0 else f"m={more}")
+        out.append(_pt(_kitty(cmd, ch)))
+    out.append(_pt(_kitty(f"a=p,U=1,i={_IMG_ID},c={cols},r={rows},q=2")))
+    return "".join(out)
+
+def image_clock_lines(w):
+    cols, rows, left = _clock_geom(w)
+    fg = f"\033[38;2;{(_IMG_ID >> 16) & 255};{(_IMG_ID >> 8) & 255};{_IMG_ID & 255}m"
+    pad = " " * (left - 1)
+    return [pad + fg + "".join(_PH + chr(_DIA[r]) + chr(_DIA[c]) for c in range(cols)) + R
+            for r in range(rows)]
+
+def clock_delete():
+    if _clk["key"] is None:
+        return ""
+    return _pt(_kitty(f"a=d,d=i,i={_IMG_ID}"))
+
+# ── Metric state & collection ──────────────────────────────────
+
+BATTERY_REFRESH_S = 5.0
+TEMP_REFRESH_S = 3.0
 
 class State:
     def __init__(self):
@@ -387,20 +627,31 @@ class State:
         self.net_in_hist  = deque(maxlen=24)
         self.net_out_hist = deque(maxlen=24)
         self.prev_bytes   = None
-        # Metrics cached for METRIC_REFRESH_S; the clock still ticks every 1s.
+        self.batt         = (None, False)
+        self.batt_at      = 0.0
         self.metrics      = None
         self.last_refresh = 0.0
+        self.cpu_model    = None
+        self.temp         = None
+        self.temp_at      = 0.0
 
-METRIC_REFRESH_S = 2.0
-
-def refresh_metrics(state):
+def collect(state):
+    now = time.time()
     cpu = cpu_pct()
     mu, mt, mp = mem_info()
     da, dt, dp, du = disk_info()
     in_b, out_b = net_bytes()
-    bp, bc = battery_info()
+    if state.metrics is None or (now - state.batt_at) >= BATTERY_REFRESH_S:
+        state.batt = battery_info()
+        state.batt_at = now
+    bp, bc = state.batt
     la = loadavg()
-    now = time.time()
+    if state.cpu_model is None:
+        state.cpu_model = cpu_model()
+    if state.metrics is None or (now - state.temp_at) >= TEMP_REFRESH_S:
+        state.temp = cpu_temp()
+        state.temp_at = now
+    ctemp = state.temp
     if state.prev_bytes:
         dt_s = max(0.5, now - state.prev_bytes[0])
         in_rate  = max(0, in_b  - state.prev_bytes[1]) / dt_s
@@ -413,105 +664,434 @@ def refresh_metrics(state):
     state.prev_bytes = (now, in_b, out_b)
     state.metrics = dict(cpu=cpu, mu=mu, mt=mt, mp=mp,
                          da=da, du=du, dt=dt, dp=dp,
-                         in_rate=in_rate, out_rate=out_rate, bp=bp, bc=bc, la=la)
+                         in_rate=in_rate, out_rate=out_rate, bp=bp, bc=bc, la=la,
+                         cpu_model=state.cpu_model, cpu_temp=ctemp,
+                         pub_ip=public_ip())
     state.last_refresh = now
 
-def draw(state):
+def snapshot(state):
+    m = state.metrics
+    return dict(
+        ts=state.last_refresh,
+        cpu=m['cpu'], cpu_hist=list(state.cpu_hist),
+        mu=m['mu'], mt=m['mt'], mp=m['mp'],
+        da=m['da'], du=m['du'], dt=m['dt'], dp=m['dp'],
+        in_rate=m['in_rate'], out_rate=m['out_rate'],
+        net_in_hist=list(state.net_in_hist), net_out_hist=list(state.net_out_hist),
+        bp=m['bp'], bc=m['bc'], la=list(m['la']),
+        cpu_model=m['cpu_model'], cpu_temp=m['cpu_temp'],
+        pub_ip=m.get('pub_ip'),
+    )
+
+# ── Shared snapshot / collector daemon ─────────────────────────
+
+def _runtime_dir():
+    d = os.environ.get("XDG_RUNTIME_DIR")
+    if d and os.path.isdir(d):
+        return d
+    return tempfile.gettempdir()
+
+_RT = _runtime_dir()
+SNAP_PATH = os.path.join(_RT, f"phoenix-sysmon-{os.getuid()}.json")
+LOCK_PATH = os.path.join(_RT, f"phoenix-sysmon-{os.getuid()}.lock")
+SNAP_STALE_S = 4.0
+
+def write_snapshot(data):
+    tmp = f"{SNAP_PATH}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(data, f)
+        os.replace(tmp, SNAP_PATH)
+    except OSError:
+        try: os.unlink(tmp)
+        except OSError: pass
+
+def read_snapshot():
+    try:
+        with open(SNAP_PATH) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+def ensure_collector():
+    try:
+        subprocess.Popen(
+            [sys.executable, os.path.realpath(__file__), "--collector"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, start_new_session=True)
+    except Exception:
+        pass
+
+def sysmon_panes_exist():
+    try:
+        out = subprocess.check_output(
+            ["tmux", "list-panes", "-a", "-F", "#{pane_title}"],
+            stderr=subprocess.DEVNULL, text=True, timeout=2)
+    except Exception:
+        return False
+    return any(line.strip() == "phoenix-sysmon" for line in out.splitlines())
+
+def run_collector():
+    fd = os.open(LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return
+
+    stop = {"v": False}
+    def _sig(*_):
+        stop["v"] = True
+    signal.signal(signal.SIGTERM, _sig)
+    signal.signal(signal.SIGINT, _sig)
+
+    state = State()
+    start = time.time()
+    last_check = start
+    misses = 0
+    try:
+        while not stop["v"]:
+            collect(state)
+            write_snapshot(snapshot(state))
+            now = time.time()
+            if now - start > 8 and now - last_check >= 3:
+                last_check = now
+                if sysmon_panes_exist():
+                    misses = 0
+                else:
+                    misses += 1
+                    if misses >= 2:
+                        break
+            time.sleep(1)
+    finally:
+        try: os.unlink(SNAP_PATH)
+        except OSError: pass
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        except OSError:
+            pass
+
+# ── Graphical status block (Kitty ring gauges + network dials) ─────
+
+_RING_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+    "fonts", "phoenix-rings.json")
+
+def _load_rings():
+    try:
+        with open(_RING_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+def _glyphs(d):
+    return {c: (g["w"], g["h"], zlib.decompress(base64.b64decode(g["z"]))) for c, g in d.items()}
+
+_RINGS = _load_rings()
+if _RINGS and "metric" in _RINGS:
+    _m, _n = _RINGS["metric"], _RINGS["net"]
+    _M_PX, _N_PX = _m["px"], _n["px"]
+    _M_OFF = zlib.decompress(base64.b64decode(_m["off"]))
+    _N_OFF = zlib.decompress(base64.b64decode(_n["off"]))
+    _M_ARC, _M_NUM, _N_ARC = _m["arc"], _m["num"], _n["arc"]   # b64, decoded on demand
+    _OFF_RGB = tuple(_RINGS["off_rgb"]); _FG_RGB = tuple(_RINGS["fg_rgb"])
+    _TEAL = tuple(_RINGS["teal"]); _GOLD = tuple(_RINGS["gold"]); _RED = tuple(_RINGS["red"])
+    _NET_DN_RGB = tuple(_RINGS["net_dn_rgb"]); _NET_UP_RGB = tuple(_RINGS["net_up_rgb"])
+    _DIGITS = _glyphs(_RINGS.get("digits", {}))
+    _UNITS = _glyphs(_RINGS.get("units", {}))
+    _NUM_CY = _RINGS.get("num_cy", 0.5); _UNIT_CY = _RINGS.get("unit_cy", 0.85)
+else:
+    _M_OFF = None
+    _DIGITS, _UNITS, _NUM_CY, _UNIT_CY = {}, {}, 0.5, 0.85
+    _TEAL = _GOLD = _RED = _FG_RGB = (238, 238, 238)
+_RING_C, _RING_R = 8, 4
+_NET_C, _NET_R = 10, 5                
+_ring_key = {}
+_metric_pl = {}                      
+_net_base = {}                       
+
+def color_for(p):     return _RED if p >= 90 else _GOLD if p >= 70 else _TEAL
+def bat_color_for(p): return _RED if p < 20 else _GOLD if p < 40 else _TEAL
+
+def graphics_active():
+    return _M_OFF is not None and image_clock_active()
+
+def _gid(n):
+    return _IMG_ID + 1 + n            
+
+def _at(row, col, s):
+    return f"\033[{row};{col}H{s}\033[K"
+
+def _ph_at(img_id, top, left, cols, rows):
+    fg = f"\033[38;2;{(img_id >> 16) & 255};{(img_id >> 8) & 255};{img_id & 255}m"
+    return "".join(
+        f"\033[{top + r};{left}H{fg}" +
+        "".join(_PH + chr(_DIA[r]) + chr(_DIA[c]) for c in range(cols)) + R
+        for r in range(rows))
+
+def _chunks(b):
+    return [b[i:i + 4096] for i in range(0, len(b), 4096)] or [""]
+
+def _reconstruct(off, arc_a, num_a, arc_rgb, px):
+    out = bytearray(off)
+    ar, ag, ab = arc_rgb
+    nr, ng, nb = _FG_RGB
+    for i in range(px * px):
+        o = i * 4
+        oa = out[o + 3]
+        if oa:
+            aa = arc_a[i]
+            if aa:
+                f = 255 if aa >= oa else aa * 255 // oa
+                inv = 255 - f
+                out[o]     = (out[o]     * inv + ar * f) // 255
+                out[o + 1] = (out[o + 1] * inv + ag * f) // 255
+                out[o + 2] = (out[o + 2] * inv + ab * f) // 255
+        if num_a is not None:
+            na = num_a[i]
+            if na:
+                ca = out[o + 3]
+                oa2 = na + ca * (255 - na) // 255
+                if oa2:
+                    dj = ca * (255 - na) // 255
+                    out[o]     = (nr * na + out[o]     * dj) // oa2
+                    out[o + 1] = (ng * na + out[o + 1] * dj) // oa2
+                    out[o + 2] = (nb * na + out[o + 2] * dj) // oa2
+                    out[o + 3] = oa2
+    return bytes(out)
+
+def _tx_payload(img_id, b64, px, cols, rows):
+    cs = _chunks(b64); out = []
+    for i, ch in enumerate(cs):
+        more = 1 if i < len(cs) - 1 else 0
+        cmd = (f"a=t,f=32,s={px},v={px},o=z,i={img_id},q=2,m={more}"
+               if i == 0 else f"m={more}")
+        out.append(_pt(_kitty(cmd, ch)))
+    out.append(_pt(_kitty(f"a=p,U=1,i={img_id},c={cols},r={rows},q=2")))
+    return "".join(out)
+
+def _metric_payload(kind, pct):
+    key = (kind, pct)
+    pl = _metric_pl.get(key)
+    if pl is None:
+        col = (bat_color_for if kind == "bat" else color_for)(pct)
+        arc_a = zlib.decompress(base64.b64decode(_M_ARC[pct]))
+        num_a = zlib.decompress(base64.b64decode(_M_NUM[pct]))
+        rgba = _reconstruct(_M_OFF, arc_a, num_a, col, _M_PX)
+        pl = base64.b64encode(zlib.compress(rgba, 6)).decode()
+        _metric_pl[key] = pl
+    return pl
+
+def _put(row, col, s):               
+    return f"\033[{row};{col}H{s}"
+
+def _net_fill(rate, peak):           
+    lo = 1024.0
+    mx = max(peak, lo * 4)
+    span = math.log1p(mx) - math.log1p(lo)
+    if rate <= lo or span <= 0:
+        return 0.0
+    return min((math.log1p(rate) - math.log1p(lo)) / span, 1.0) * 100
+
+def _blit(dst, W, H, src, sw, sh, ox, oy):
+    for ry in range(sh):
+        yy = oy + ry
+        if yy < 0 or yy >= H:
+            continue
+        for rx in range(sw):
+            xx = ox + rx
+            if xx < 0 or xx >= W:
+                continue
+            so = (ry * sw + rx) * 4
+            a = src[so + 3]
+            if not a:
+                continue
+            do = (yy * W + xx) * 4
+            if a == 255:
+                dst[do:do + 4] = src[so:so + 4]
+            else:
+                ia = 255 - a
+                dst[do]     = (src[so]     * a + dst[do]     * ia) // 255
+                dst[do + 1] = (src[so + 1] * a + dst[do + 1] * ia) // 255
+                dst[do + 2] = (src[so + 2] * a + dst[do + 2] * ia) // 255
+                dst[do + 3] = a + dst[do + 3] * ia // 255
+
+def _blit_run(canvas, W, H, glyphs, cy, gap):
+    # Composite a horizontal run of glyphs, centred at x=W/2 and y=H*cy.
+    if not glyphs:
+        return
+    tot = sum(g[0] for g in glyphs) + gap * (len(glyphs) - 1)
+    x = (W - tot) // 2
+    yc = int(H * cy)
+    for gw, gh, data in glyphs:
+        _blit(canvas, W, H, data, gw, gh, x, yc - gh // 2)
+        x += gw + gap
+
+def _net_payload(rgb, pct, num, unit):
+    base = _net_base.get((rgb, pct))
+    if base is None:
+        arc_a = zlib.decompress(base64.b64decode(_N_ARC[pct]))
+        base = _reconstruct(_N_OFF, arc_a, None, rgb, _N_PX)
+        _net_base[(rgb, pct)] = base
+    canvas = bytearray(base)
+    _blit_run(canvas, _N_PX, _N_PX, [_DIGITS[c] for c in num if c in _DIGITS], _NUM_CY, 2)
+    _blit_run(canvas, _N_PX, _N_PX, [_UNITS[c] for c in unit if c in _UNITS], _UNIT_CY, 1)
+    return base64.b64encode(zlib.compress(bytes(canvas), 3)).decode()
+
+def _fit(s, n):
+    return s if len(s) <= n else (s[:n - 1] + "…") if n > 1 else s[:n]
+
+def render_graphics(v, w, top, gap):
+    RL = max(2, w - _RING_C + 1)         
+    LW = RL - 3                          
+    out = []
+
+    def ring(n, r0, pct, title, info, kind):
+        iid = _gid(n)
+        p = max(0, min(100, int(round(pct))))
+        _ring_key[iid] = p
+        out.append(_tx_payload(iid, _metric_payload(kind, p), _M_PX, _RING_C, _RING_R))
+        out.append(_at(r0 + 1, 2, f"{SEA}{B}{title}{R}"))
+        out.append(_at(r0 + 2, 2, info))
+        out.append(_ph_at(iid, r0, RL, _RING_C, _RING_R))
+
+    model = v.get('cpu_model') or ''
+    temp = v.get('cpu_temp')
+    if temp:
+        cinfo = f"{MUTED}{_fit(model, LW - 6)} · {FG}{temp:.0f}°C{R}"
+    else:
+        cinfo = f"{MUTED}{_fit(model or 'processor', LW)}{R}"
+
+    r = top + 1
+    ring(0, r, v['cpu'], "CPU", cinfo, "metric"); r += 4
+    r += gap; ring(1, r, v['mp'], "MEMORY",
+         f"{FG}{v['mu']:.1f}{MUTED} GB of {FG}{v['mt']:.1f}{MUTED} GB used{R}", "metric"); r += 4
+    r += gap; ring(2, r, v['dp'], "DISK",
+         f"{FG}{v['da']:.0f}{MUTED} GB free of {FG}{v['dt']:.0f}{MUTED} GB{R}", "metric"); r += 4
+
+    bp, bc = v.get('bp'), v.get('bc')
+    if bp is not None:
+        binfo = f"{YEL}⚡ charging{R}" if bc else f"{MUTED}on battery{R}"
+        r += gap; ring(3, r, bp, "BATTERY", binfo, "bat"); r += 4
+
+    r += gap
+    ip = v.get('pub_ip') or '—'
+    dots = max(1, (w - 2) - len("NETWORK") - len(ip) - 2)
+    out.append(_at(r, 2, f"{SEA}{B}NETWORK{R} {DIM}{'·' * dots}{R} {FG}{ip}{R}"))
+    cr = r + 1
+
+    inh, outh = v.get('net_in_hist', []), v.get('net_out_hist', [])
+    peak = max(max(inh) if inh else 0.0, max(outh) if outh else 0.0)
+    half = (w - 2) // 2
+    pad = max(0, (half - _NET_C) // 2)
+    dn_col = "\033[38;2;44;228;248m"    # #2ce4f8
+    up_col = "\033[38;2;251;112;185m"   # #fb70b9
+
+    def net_gauge(iid, rgb, rate, left, word, col):
+        num, unit = (fmt_rate(rate).split() + [""])[:2]
+        val = float(num) if num.replace(".", "", 1).isdigit() else 0.0
+        cnum = f"{val:.1f}" if val < 10 else f"{val:.0f}"   
+        p = max(0, min(100, int(round(_net_fill(rate, peak)))))
+        out.append(_tx_payload(iid, _net_payload(rgb, p, cnum, unit), _N_PX, _NET_C, _NET_R))
+        out.append(_ph_at(iid, cr, left, _NET_C, _NET_R))
+        out.append(_put(cr + _NET_R, left, f"{col}{B}{word:^{_NET_C}}{R}"))
+
+    net_gauge(_gid(4), _NET_DN_RGB, v['in_rate'],  2 + pad,        "download", dn_col)
+    net_gauge(_gid(5), _NET_UP_RGB, v['out_rate'], 2 + half + pad, "upload",   up_col)
+    out.append(f"\033[{cr + _NET_R + 1};1H\033[J")   
+    return "".join(out)
+
+def graphics_delete():
+    if not _ring_key:
+        return ""
+    return "".join(_pt(_kitty(f"a=d,d=i,i={_gid(n)}")) for n in range(6))
+
+# ── Main draw ──────────────────────────────────────────────────
+
+_draw_wh = {"v": None}
+
+def _delete_all_images():
+    ids = [_IMG_ID] + [_gid(n) for n in range(6)]
+    return "".join(_pt(_kitty(f"a=d,d=i,i={i}")) for i in ids)
+
+def draw(v):
     w = pane_width()
     h = pane_height()
-    bar_w = w - 4
-
-    now = time.time()
-    if state.metrics is None or (now - state.last_refresh) >= METRIC_REFRESH_S:
-        refresh_metrics(state)
-    m = state.metrics
-    cpu, mu, mt, mp = m['cpu'], m['mu'], m['mt'], m['mp']
-    da, du, dt, dp = m['da'], m['du'], m['dt'], m['dp']
-    in_rate, out_rate = m['in_rate'], m['out_rate']
-    bp, bc, la = m['bp'], m['bc'], m['la']
-
-    # \033[3J wipes scrollback so the pane can never scroll up to reveal
-    # stale frames.
-    sys.stdout.write("\033[H\033[2J\033[3J")
-    L = []
-    L.extend(header_block(w))
-    L.append("")
-
-    # ── CPU ─────────────────────────────────────────────
-
-    L.append(section_top("CPU",    f"{cpu:5.1f}%", w))
-    L.append(cont(smooth_bar(cpu, bar_w)))
-    L.append(cont(f"{TEAL}{sparkline(state.cpu_hist, bar_w, max_val=100)}{R}"))
-    L.append(cont(f"{MUTED}load {FG}{la[0]:.2f}{R} {MUTED}·{R} "
-                  f"{FG}{la[1]:.2f}{R} {MUTED}·{R} {FG}{la[2]:.2f}{R}"))
-    L.append(section_end())
-    L.append("")
-
-    # ── Memory ──────────────────────────────────────────
-
-    L.append(section_top("MEMORY", f"{mp:5.1f}%", w))
-    L.append(cont(smooth_bar(mp, bar_w)))
-    L.append(cont(f"{FG}{mu:.1f}{R} {MUTED}/{R} {FG}{mt:.1f} GB{R} {MUTED}used{R}"))
-    L.append(section_end())
-    L.append("")
-
-    # ── Disk ────────────────────────────────────────────
-
-    L.append(section_top("DISK",   f"{dp:5.1f}%", w))
-    L.append(cont(smooth_bar(dp, bar_w)))
-    L.append(cont(f"{FG}{da:.0f}{R} {MUTED}/{R} {FG}{dt:.0f} GB{R} {MUTED}free{R}"))
-    L.append(section_end())
-    L.append("")
-
-    # ── Network ─────────────────────────────────────────
-
-    L.append(section_top("NETWORK", "", w))
-    max_rate = max(max(state.net_in_hist, default=1),
-                   max(state.net_out_hist, default=1), 1024)
-    L.append(cont(f"{TEAL}▼{R} {FG}{fmt_rate(in_rate)}{R}"))
-    L.append(cont(f"{SEA}{sparkline(state.net_in_hist, bar_w, max_val=max_rate)}{R}"))
-    L.append(cont(f"{TEAL}▲{R} {FG}{fmt_rate(out_rate)}{R}"))
-    L.append(cont(f"{SEA}{sparkline(state.net_out_hist, bar_w, max_val=max_rate)}{R}"))
-    L.append(section_end())
-    L.append("")
-
-    # ── Battery ─────────────────────────────────────────
-
-    if bp is not None:
-        L.append(section_top("BATTERY", f"{bp:3d}%", w))
-        L.append(cont(smooth_bar(bp, bar_w, inverse=True)))
-        if bc:
-            L.append(cont(f"{YEL}⚡{R}{FG}charging{R}"))
-        else:
-            L.append(cont(f"{MUTED}▮ on battery{R}"))
-        L.append(section_end())
-        L.append("")
-
-    # Absolute cursor positioning so output never scrolls; truncation at the
-    # bottom keeps the header anchored when the pane is too short.
-    for i, line in enumerate(L):
+    first = _draw_wh["v"] != (w, h)
+    _draw_wh["v"] = (w, h)
+    out = ["\033[H\033[2J\033[3J"] if first else ["\033[H"]
+    gfx = graphics_active()
+    if gfx or image_clock_active():
+        if first:
+            out.append(_delete_all_images())
+        _clk["key"] = None
+        _ring_key.clear()
+    if image_clock_active():
+        out.append(ensure_clock_image(w))
+    header = header_block(w)
+    last = 0
+    for i, line in enumerate(header):
         if i >= h:
             break
-        sys.stdout.write(f"\033[{i + 1};1H{line}")
+        out.append(f"\033[{i + 1};1H{line}\033[K")
+        last = i + 1
+    if gfx:
+        gap = 1 if (h - last) >= 24 else 0
+        out.append(render_graphics(v, w, last, gap))   
+    else:
+        out.append(f"\033[{last + 1};1H\033[J")
+    sys.stdout.write("".join(out))
     sys.stdout.flush()
 
-# ── Entry point ────────────────────────────────────────────────
+# ── Renderer ───────────────────────────────────────────────────
 
 def cleanup_exit(*_):
+    sys.stdout.write(clock_delete() + graphics_delete())
     sys.stdout.write("\033[?25h\n"); sys.stdout.flush()
     sys.exit(0)
 
-def main():
+def run_renderer():
     signal.signal(signal.SIGINT,  cleanup_exit)
     signal.signal(signal.SIGTERM, cleanup_exit)
+    _apply_pane_bg()
     sys.stdout.write("\033[?25l"); sys.stdout.flush()
-    state = State()
+
+    in_tmux = bool(os.environ.get("TMUX"))
+    inline = None
+    last_spawn = 0.0
+    if in_tmux:
+        ensure_collector()
+        last_spawn = time.time()
+
     try:
         while True:
-            draw(state)
+            v = None
+            if in_tmux:
+                data = read_snapshot()
+                if data is not None and (time.time() - data.get("ts", 0)) < SNAP_STALE_S:
+                    v = data
+                else:
+                    now = time.time()
+                    if now - last_spawn >= 3:
+                        ensure_collector()
+                        last_spawn = now
+            if v is None:
+                if inline is None:
+                    inline = State()
+                collect(inline)
+                v = snapshot(inline)
+            draw(v)
             time.sleep(1)
     finally:
+        sys.stdout.write(clock_delete() + graphics_delete())
         sys.stdout.write("\033[?25h"); sys.stdout.flush()
+
+def main():
+    if "--collector" in sys.argv[1:]:
+        run_collector()
+    else:
+        run_renderer()
 
 if __name__ == "__main__":
     main()
